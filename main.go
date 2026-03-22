@@ -84,8 +84,8 @@ func main() {
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 
-	slog.Info("starting server on :8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	slog.Info("starting server on ", "Joined", cfg.Server.Joined)
+	if err := http.ListenAndServe(cfg.Server.Joined, mux); err != nil {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}

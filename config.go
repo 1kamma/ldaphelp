@@ -36,6 +36,13 @@ type Config struct {
 	Attribute  string   `yaml:"attribute"`
 	NtfyURI    string   `yaml:"ntfy_uri"`
 	Settings   Settings `yaml:"settings"`
+	Server     Server   `yaml:"server"`
+}
+
+type Server struct {
+	Host   string `yaml:"host" json:"host"`
+	Port   int    `yaml:"port" json:"port"`
+	Joined string
 }
 
 type Credentials struct {
@@ -68,6 +75,10 @@ func LoadConfig(path string) (Config, error) {
 						},
 					},
 				},
+				Server: Server{
+					Host: "localhost",
+					Port: 8080,
+				},
 			}
 			if out, marshalErr := yaml.Marshal(emptyCfg); marshalErr == nil {
 				os.WriteFile(path, out, 0644)
@@ -83,7 +94,7 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Settings.UI.Theme == "" {
 		cfg.Settings.UI.Theme = "dark"
 	}
-
+	cfg.Server.Joined = strings.Join([]string{cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)}, ":")
 	dbSettings, errDb := LoadSettingsFromDB()
 	if errDb == nil && (dbSettings.UI.Theme != "" || len(dbSettings.Objects) > 0) {
 		cfg.Settings = dbSettings
