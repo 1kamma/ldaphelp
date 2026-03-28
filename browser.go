@@ -221,8 +221,8 @@ func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DN      string            `json:"dn"`
-		Replace map[string]string `json:"replace"`
-		Add     map[string]string `json:"add"`
+		Replace map[string][]string `json:"replace"`
+		Add     map[string][]string `json:"add"`
 		Delete  []string          `json:"delete"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -239,10 +239,10 @@ func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 
 	modReq := ldap.NewModifyRequest(req.DN, nil)
 	for k, v := range req.Replace {
-		modReq.Replace(k, []string{v})
+		modReq.Replace(k, v)
 	}
 	for k, v := range req.Add {
-		modReq.Add(k, []string{v})
+		modReq.Add(k, v)
 	}
 	for _, k := range req.Delete {
 		modReq.Delete(k, nil)
@@ -325,6 +325,37 @@ func (a *App) handleApiMove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+
+func (a *App) handleApiNextID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	attr := r.URL.Query().Get("attr")
+	if attr == "" {
+		http.Error(w, "Missing attr", http.StatusBadRequest)
+		return
+	}
+	conn, err := getLDAPConn(r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	bases := []string{a.cfg.Base}
+	if a.cfg.Base == "" {
+		rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
+		rootRes, err := conn.Search(rootReq)
+		if err == nil && len(rootRes.Entries) > 0 {
+			bases = rootRes.Entries[0].GetAttributeValues("namingContexts")
+		}
+	}
+
+	id := getNextID(conn, bases, attr)
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(id))
+}
 func getNextID(conn *ldap.Conn, bases []string, attr string) string {
 	maxID := 10000
 	for _, base := range bases {
@@ -565,6 +596,7 @@ const browseHTML = `<!doctype html>
 <body>
   <div id="sidebar">
     <div class="header">
+    <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-left:16px;">Schema Manager</button>
       <h3>LDAP Tree</h3>
       <div>
         <button class="btn" style="background: #4b5563;" onclick="openSettings()">Settings</button>
@@ -578,10 +610,12 @@ const browseHTML = `<!doctype html>
   </div>
   <div id="content">
     <div class="header">
+    <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-left:16px;">Schema Manager</button>
       <h2>Entry Details</h2>
     </div>
     <div style="display:flex; justify-content:space-between; margin-bottom: 15px; align-items:center;">
       <div id="entry-dn" style="flex:1; font-family: monospace; background: var(--hover); padding: 10px; border-radius: 4px; border: 1px solid var(--border);">Select an entry to view details.</div>
+      <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6; margin-left: 10px;" onclick="showAddObjectClass()">Add Object Class</button>
       <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6; margin-left: 10px;" onclick="showAddAttribute()">Add Attribute</button>
       <button id="btn-edit" class="btn" style="display:none; margin-left: 10px;" onclick="toggleEdit()">Edit</button>
       <button id="btn-save" class="btn" style="display:none; background: #10b981; margin-left: 10px;" onclick="saveEdits()">Save</button>
@@ -591,6 +625,12 @@ const browseHTML = `<!doctype html>
       <select id="add-attr-select" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></select>
       <input type="text" id="add-attr-val" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
       <button class="btn" style="background: #10b981; padding: 4px 8px;" onclick="addAttribute()">Add</button>
+    </div>
+    <div id="add-oc-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
+      <input type="text" id="add-oc-name" placeholder="Object Class Name" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
+      <button class="btn" style="background: #3b82f6; padding: 4px 8px;" onclick="nextAddObjectClass()">Next</button>
+      <div id="add-oc-attrs" style="margin-top: 10px; display:none;"></div>
+      <button id="btn-submit-oc" class="btn" style="display:none; background: #10b981; padding: 4px 8px; margin-top: 10px;" onclick="submitAddObjectClass()">Submit</button>
     </div>
     <table id="entry-attrs" style="display:none;">
       <thead><tr><th>Attribute</th><th>Value(s)</th></tr></thead>
@@ -621,13 +661,55 @@ const browseHTML = `<!doctype html>
     </div>
   </div>
 
-  <div id="settings-modal">
-    <div class="modal-content">
+  <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
+    <div class="modal-content" style="max-height: 80vh; overflow-y: auto; width: 600px;">
       <h3>Settings</h3>
-      <textarea id="settings-json" rows="15" style="width:100%; margin-top:10px; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
-      <div class="modal-actions">
+      
+      <h4>Theme & Context Menu (JSON)</h4>
+      <textarea id="settings-ui-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
+
+      <h4>Quick Create Objects (JSON)</h4>
+      <textarea id="settings-objects-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
+
+      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
+
+      <h3>SSO Connections</h3>
+      
+      <h4>SAML</h4>
+      <label><input type="checkbox" id="saml-enabled"> Enabled</label><br>
+      <input type="text" id="saml-idp" class="input-field" placeholder="IdP URL" style="width: 100%; margin-top: 5px;" />
+      <input type="text" id="saml-entity" class="input-field" placeholder="Entity ID" style="width: 100%; margin-top: 5px;" />
+      <textarea id="saml-cert" rows="3" class="input-field" placeholder="Certificate" style="width: 100%; margin-top: 5px;"></textarea>
+
+      <h4>OIDC</h4>
+      <label><input type="checkbox" id="oidc-enabled"> Enabled</label><br>
+      <input type="text" id="oidc-issuer" class="input-field" placeholder="Issuer URL" style="width: 100%; margin-top: 5px;" />
+      <input type="text" id="oidc-clientid" class="input-field" placeholder="Client ID" style="width: 100%; margin-top: 5px;" />
+      <input type="text" id="oidc-clientsecret" class="input-field" placeholder="Client Secret" style="width: 100%; margin-top: 5px;" />
+
+      <div class="modal-actions" style="margin-top: 20px;">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('settings-modal').style.display='none'">Cancel</button>
         <button class="btn" style="background: #10b981;" onclick="saveSettings()">Save</button>
+      </div>
+    </div>
+  </div>
+    </div>
+  </div>
+
+  <div id="credential-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
+    <div class="modal-content" style="max-width: 400px;">
+      <h3 style="margin-top:0;">Add Credential to Vault</h3>
+      <div class="form-group">
+        <label>User (cn, uid, sn, or full DN)</label>
+        <input type="text" id="cred-user" class="input-field" style="width: 100%; box-sizing: border-box;" />
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="cred-password" class="input-field" style="width: 100%; box-sizing: border-box;" />
+      </div>
+      <div class="modal-actions" style="margin-top: 20px;">
+        <button class="btn" style="background: #6b7280;" onclick="document.getElementById('credential-modal').style.display='none'">Cancel</button>
+        <button class="btn" style="background: #10b981;" onclick="submitAddCredential()">Save</button>
       </div>
     </div>
   </div>
@@ -772,6 +854,7 @@ const browseHTML = `<!doctype html>
             };
 
             addAction('Add OrganizationalUnit', () => alert('Add OU under ' + nodeData.dn));
+            addAction('Add Credential', () => showAddCredentialModal(nodeData.dn));
 
             if (ocs.includes('person') || ocs.includes('inetorgperson') || ocs.includes('posixaccount')) {
                 addAction('Set Password', () => setPassword(nodeData.dn));
@@ -886,10 +969,107 @@ const browseHTML = `<!doctype html>
         document.getElementById('entry-attrs').style.display = 'table';
         document.getElementById('add-attr-panel').style.display = 'none';
         document.getElementById('btn-add-attr').style.display = 'none';
+        document.getElementById('btn-add-oc').style.display = 'none';
+        document.getElementById('add-oc-panel').style.display = 'none';
+    }
+
+    function showAddObjectClass() {
+        document.getElementById('add-attr-panel').style.display = 'none';
+        document.getElementById('add-oc-panel').style.display = 'block';
+        document.getElementById('add-oc-attrs').style.display = 'none';
+        document.getElementById('btn-submit-oc').style.display = 'none';
+        document.getElementById('add-oc-name').value = '';
+    }
+
+    async function nextAddObjectClass() {
+        const objName = document.getElementById('add-oc-name').value.trim();
+        if (!objName) return;
+        
+        const res = await fetch('/api/schema?oc=' + encodeURIComponent(objName));
+        if (!res.ok) {
+            alert("Failed to fetch schema for " + objName);
+            return;
+        }
+        const schema = await res.json();
+        
+        const existing = Object.keys(currentEntryData).map(k => k.toLowerCase());
+        const missingMust = (schema.must || []).filter(a => !existing.includes(a.toLowerCase()));
+        
+        const container = document.getElementById('add-oc-attrs');
+        container.innerHTML = '<h4>Required Missing Attributes:</h4>';
+        container.style.display = 'block';
+        
+        for (const attr of missingMust) {
+            const row = document.createElement('div');
+            row.style.marginBottom = '5px';
+            const label = document.createElement('label');
+            label.textContent = attr + ': ';
+            label.style.display = 'inline-block';
+            label.style.width = '120px';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'oc-attr-input';
+            input.dataset.attr = attr;
+            input.style.padding = '4px';
+            input.style.background = 'var(--bg)';
+            input.style.color = 'var(--text)';
+            input.style.border = '1px solid var(--border)';
+            
+            if (attr.toLowerCase() === 'uidnumber' || attr.toLowerCase() === 'gidnumber') {
+                const nextIdRes = await fetch('/api/next_id?attr=' + encodeURIComponent(attr));
+                if (nextIdRes.ok) {
+                    input.value = await nextIdRes.text();
+                }
+            }
+            
+            row.appendChild(label);
+            row.appendChild(input);
+            container.appendChild(row);
+        }
+        
+        document.getElementById('btn-submit-oc').style.display = 'block';
+    }
+
+    async function submitAddObjectClass() {
+        const objName = document.getElementById('add-oc-name').value.trim();
+        if (!objName) return;
+        
+        const inputs = document.querySelectorAll('.oc-attr-input');
+        const reqData = { dn: currentEntryDN, add: { objectclass: [objName] }, replace: {}, delete: {} };
+        
+        let allFilled = true;
+        inputs.forEach(input => {
+            const val = input.value.trim();
+            if (!val) {
+                allFilled = false;
+            } else {
+                reqData.add[input.dataset.attr] = [val];
+            }
+        });
+        
+        if (!allFilled) {
+            alert("Please fill all required missing attributes.");
+            return;
+        }
+        
+        const res = await fetch('/api/modify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(reqData)
+        });
+        
+        if (res.ok) {
+            document.getElementById('add-oc-panel').style.display = 'none';
+            loadEntry(currentEntryDN);
+        } else {
+            alert("Failed to add object class: " + await res.text());
+        }
     }
 
     async function showAddAttribute() {
-        const ocs = currentEntryData['objectClass'] || [];
+        document.getElementById('add-oc-panel').style.display = 'none';
+        const ocKey = Object.keys(currentEntryData).find(k => k.toLowerCase() === 'objectclass');
+        const ocs = ocKey ? currentEntryData[ocKey] : [];
         const res = await fetch('/api/schema?oc=' + encodeURIComponent(ocs.join(',')));
         if (!res.ok) return;
         const schema = await res.json();
@@ -906,14 +1086,24 @@ const browseHTML = `<!doctype html>
         document.getElementById('add-attr-panel').style.display = 'block';
     }
 
-    function addAttribute() {
+    async function addAttribute() {
         const attr = document.getElementById('add-attr-select').value;
         const val = document.getElementById('add-attr-val').value;
         if (!attr || val === "") return;
-        currentEntryData[attr] = [val];
-        isEditing = false;
-        loadEntry(currentEntryDN);
-        toggleEdit();
+        
+        const res = await fetch('/api/modify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dn: currentEntryDN, add: { [attr]: [val] } })
+        });
+
+        if (res.ok) {
+            isEditing = false;
+            loadEntry(currentEntryDN);
+            document.getElementById('add-attr-panel').style.display = 'none';
+        } else {
+            alert('Failed to add attribute.');
+        }
     }
 
     function toggleEdit() {
@@ -921,7 +1111,8 @@ const browseHTML = `<!doctype html>
         document.getElementById('btn-edit').textContent = isEditing ? 'Cancel' : 'Edit';
         document.getElementById('btn-save').style.display = isEditing ? 'inline-block' : 'none';
         document.getElementById('btn-add-attr').style.display = isEditing ? 'inline-block' : 'none';
-        if (!isEditing) document.getElementById('add-attr-panel').style.display = 'none';
+        document.getElementById('btn-add-oc').style.display = isEditing ? 'inline-block' : 'none';
+        if (!isEditing) { document.getElementById('add-attr-panel').style.display = 'none'; document.getElementById('add-oc-panel').style.display = 'none'; }
 
         const readOnly = ['userpassword', 'modifiersname', 'modifytimestamp', 'subschemasubentry', 'memberof', 'creatorsname', 'createtimestamp', 'contextcsn', 'entrydn', 'entrycsn', 'entryuuid', 'hasalsubordinates', 'numsubordinates'];
         const cells = document.querySelectorAll('.val-cell');
@@ -932,8 +1123,8 @@ const browseHTML = `<!doctype html>
                     cell.style.opacity = '0.5';
                     return;
                 }
-                const val = currentEntryData[attr].join(', ');
-                cell.innerHTML = '<input type="text" style="width:80%; box-sizing:border-box; padding:4px;" value="' + val.replace(/"/g, '&quot;') + '"><button onclick="deleteAttr(\'' + attr + '\')" style="margin-left:5px; background:#dc2626; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">X</button>';
+                const val = currentEntryData[attr].join('\n'); const rows = Math.max(1, currentEntryData[attr].length);
+                cell.innerHTML = '<textarea style="width:80%; box-sizing:border-box; padding:4px; vertical-align:top;" rows="' + rows + '">' + val.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</textarea><button onclick="deleteAttr(\'' + attr + '\')" style="margin-left:5px; background:#dc2626; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">X</button>';
             } else {
                 cell.style.opacity = '1';
                 cell.innerHTML = '';
@@ -971,12 +1162,12 @@ const browseHTML = `<!doctype html>
         cells.forEach(cell => {
             const attr = cell.dataset.attr;
             if (pendingDeletes.includes(attr)) return;
-            const input = cell.querySelector('input');
+            const input = cell.querySelector('textarea');
             if (input) {
-                const newVal = input.value;
-                const oldVal = currentEntryData[attr].join(', ');
-                if (newVal !== oldVal) {
-                    replace[attr] = newVal;
+                const newVals = input.value.split('\n').map(s => s.trim()).filter(s => s !== '');
+                const oldVals = currentEntryData[attr];
+                if (JSON.stringify(newVals) !== JSON.stringify(oldVals)) {
+                    replace[attr] = newVals;
                 }
             }
         });
@@ -1012,6 +1203,8 @@ const browseHTML = `<!doctype html>
             document.getElementById('btn-delete').style.display = 'none';
             document.getElementById('btn-save').style.display = 'none';
             document.getElementById('btn-add-attr').style.display = 'none';
+        document.getElementById('btn-add-oc').style.display = 'none';
+        document.getElementById('add-oc-panel').style.display = 'none';
             document.getElementById('add-attr-panel').style.display = 'none';
             document.getElementById('entry-attrs').style.display = 'none';
 
@@ -1028,9 +1221,66 @@ const browseHTML = `<!doctype html>
         }
     });
 
-    function openSettings() {
-        document.getElementById('settings-json').value = JSON.stringify(settings, null, 2);
-        document.getElementById('settings-modal').style.display = 'flex';
+    async function openSettings() {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+            const data = await res.json();
+            document.getElementById('settings-ui-json').value = JSON.stringify(data.ui || {}, null, 2);
+            document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
+            
+            document.getElementById('saml-enabled').checked = data.sso?.saml?.enabled || false;
+            document.getElementById('saml-idp').value = data.sso?.saml?.idp_url || '';
+            document.getElementById('saml-entity').value = data.sso?.saml?.entity_id || '';
+            document.getElementById('saml-cert').value = data.sso?.saml?.cert || '';
+
+            document.getElementById('oidc-enabled').checked = data.sso?.oidc?.enabled || false;
+            document.getElementById('oidc-issuer').value = data.sso?.oidc?.issuer_url || '';
+            document.getElementById('oidc-clientid').value = data.sso?.oidc?.client_id || '';
+            document.getElementById('oidc-clientsecret').value = data.sso?.oidc?.client_secret || '';
+
+            document.getElementById('settings-modal').style.display = 'flex';
+        } else {
+            alert('Failed to load settings');
+        }
+    }
+
+    async function saveSettings() {
+        try {
+            const ui = JSON.parse(document.getElementById('settings-ui-json').value || '{}');
+            const objects = JSON.parse(document.getElementById('settings-objects-json').value || '{}');
+            
+            const newSettings = {
+                ui: ui,
+                objects: objects,
+                sso: {
+                    saml: {
+                        enabled: document.getElementById('saml-enabled').checked,
+                        idp_url: document.getElementById('saml-idp').value,
+                        entity_id: document.getElementById('saml-entity').value,
+                        cert: document.getElementById('saml-cert').value
+                    },
+                    oidc: {
+                        enabled: document.getElementById('oidc-enabled').checked,
+                        issuer_url: document.getElementById('oidc-issuer').value,
+                        client_id: document.getElementById('oidc-clientid').value,
+                        client_secret: document.getElementById('oidc-clientsecret').value
+                    }
+                }
+            };
+            
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newSettings)
+            });
+            if (res.ok) {
+                location.reload();
+            } else {
+                alert('Failed to save settings');
+            }
+        } catch (e) {
+            alert('Invalid JSON format for Theme/Context Menu or Objects');
+        }
     }
 
     async function openQuickCreate(objName, objTmpl) {
@@ -1292,25 +1542,185 @@ const browseHTML = `<!doctype html>
         }
     }
 
-    async function saveSettings() {
-        try {
-            const newSettings = JSON.parse(document.getElementById('settings-json').value);
-            const res = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(newSettings)
-            });
-            if (res.ok) {
-                location.reload();
-            } else {
-                alert('Failed to save settings');
-            }
-        } catch (e) {
-            alert('Invalid JSON format');
         }
     }
 
     loadRoots();
   </script>
+<div id="schema-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;overflow-y:auto;padding:20px;">
+    <div style="background:#1e1e1e;margin:20px auto;padding:20px;width:90%;max-width:1200px;border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+            <h2 style="margin:0;">Schema Manager</h2>
+            <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:20px;">
+            <button onclick="loadSchema('objectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
+            <button onclick="loadSchema('attributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
+        </div>
+        <div id="schema-admin-login" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
+            <h3>Schema Admin Login</h3>
+            <p style="color:#aaa;font-size:14px;">Your current login cannot edit the schema. Provide credentials that can.</p>
+            <input type="text" id="schema-admin-dn" placeholder="Admin DN (e.g., cn=admin,cn=config)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
+            <input type="password" id="schema-admin-pwd" placeholder="Password" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
+            <button onclick="unlockSchemaEdit()" style="background:#f59e0b;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Unlock Editing</button>
+        </div>
+        <div id="schema-add-form" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
+            <h3>Add New Schema Item</h3>
+            <input type="text" id="schema-dn" placeholder="DN (e.g., cn={1}core,cn=schema,cn=config)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
+            <input type="text" id="schema-attr" placeholder="Attribute (e.g., olcObjectClasses)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
+            <textarea id="schema-value" placeholder="Raw Definition Value" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;min-height:100px;"></textarea>
+            <button onclick="addSchemaItem()" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Add Item</button>
+        </div>
+        <div id="schema-content" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(400px, 1fr));gap:20px;"></div>
+    </div>
+</div>
+
+<script>
+let currentSchemaData = null;
+
+function showSchemaManager() {
+    document.getElementById('schema-modal').style.display = 'block';
+    loadSchema('objectClasses');
+}
+
+let tempAdminDN = '';
+let tempAdminPwd = '';
+
+function unlockSchemaEdit() {
+    tempAdminDN = document.getElementById('schema-admin-dn').value;
+    tempAdminPwd = document.getElementById('schema-admin-pwd').value;
+    if (tempAdminDN && tempAdminPwd) {
+        document.getElementById('schema-admin-login').style.display = 'none';
+        document.getElementById('schema-add-form').style.display = 'block';
+    }
+}
+
+async function loadSchema(type) {
+    const content = document.getElementById('schema-content');
+    content.innerHTML = '<div style="color:#aaa;">Loading...</div>';
+
+    try {
+        const res = await fetch('/api/schema_manager');
+        if (!res.ok) throw new Error(await res.text());
+        currentSchemaData = await res.json();
+
+        if (currentSchemaData.canEdit || (tempAdminDN && tempAdminPwd)) {
+            document.getElementById('schema-add-form').style.display = 'block';
+            document.getElementById('schema-admin-login').style.display = 'none';
+        } else {
+            document.getElementById('schema-add-form').style.display = 'none';
+            document.getElementById('schema-admin-login').style.display = 'block';
+        }
+
+        let html = '';
+        if (type === 'objectClasses') {
+            document.getElementById('schema-attr').value = 'olcObjectClasses';
+            currentSchemaData.objectClasses.forEach(oc => {
+                html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
+                    '<h3 style="margin-top:0;color:#3b82f6;">' + oc.name + '</h3>' +
+                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + oc.dn + '</div>';
+                if (oc.sup && oc.sup.length > 0) html += '<div style="margin-bottom:5px;"><strong>SUP:</strong> ' + oc.sup.join(', ') + '</div>';
+                if (oc.must && oc.must.length > 0) {
+                    html += '<div style="margin-bottom:5px;"><strong>MUST:</strong><ul style="margin:5px 0;padding-left:20px;">';
+                    oc.must.forEach(m => { html += '<li>' + m + '</li>'; });
+                    html += '</ul></div>';
+                }
+                if (oc.may && oc.may.length > 0) {
+                    html += '<div style="margin-bottom:5px;"><strong>MAY:</strong><ul style="margin:5px 0;padding-left:20px;">';
+                    oc.may.forEach(m => { html += '<li>' + m + '</li>'; });
+                    html += '</ul></div>';
+                }
+                html += '<details style="margin-top:10px;">' +
+                    '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
+                    '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + oc.raw + '</pre>' +
+                    '</details></div>';
+            });
+        } else if (type === 'attributeTypes') {
+            document.getElementById('schema-attr').value = 'olcAttributeTypes';
+            currentSchemaData.attributeTypes.forEach(at => {
+                html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
+                    '<h3 style="margin-top:0;color:#10b981;">' + (at.name || 'Unnamed') + '</h3>' +
+                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + at.dn + '</div>';
+                if (at.desc) html += '<div style="margin-bottom:5px;"><strong>DESC:</strong> ' + at.desc + '</div>';
+                if (at.syntax) html += '<div style="margin-bottom:5px;"><strong>SYNTAX:</strong> <span style="background:#374151;padding:2px 6px;border-radius:4px;font-family:monospace;">' + at.syntax + '</span></div>';
+                html += '<details style="margin-top:10px;">' +
+                    '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
+                    '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + at.raw + '</pre>' +
+                    '</details></div>';
+            });
+        }
+        content.innerHTML = html;
+    } catch (e) {
+        content.innerHTML = '<div style="color:#ef4444;">Failed to load schema: ' + e.message + '</div>';
+    }
+}
+
+async function addSchemaItem() {
+    const dn = document.getElementById('schema-dn').value;
+    const attr = document.getElementById('schema-attr').value;
+    const val = document.getElementById('schema-value').value;
+
+    if (!dn || !attr || !val) {
+        alert("Please fill all fields");
+        return;
+    }
+
+    try {
+        const payload = {dn: dn, attribute: attr, values: [val]};
+        if (tempAdminDN && tempAdminPwd) {
+            payload.adminDn = tempAdminDN;
+            payload.adminPwd = tempAdminPwd;
+        }
+
+        const res = await fetch('/api/schema_modify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+            alert('Added successfully!');
+            document.getElementById('schema-value').value = '';
+            loadSchema(attr === 'olcObjectClasses' ? 'objectClasses' : 'attributeTypes');
+        } else {
+            const err = await res.text();
+            alert('Failed: ' + err);
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+function showAddCredentialModal(dn) {
+    document.getElementById('cred-user').value = dn || '';
+    document.getElementById('cred-password').value = '';
+    document.getElementById('credential-modal').style.display = 'flex';
+}
+
+async function submitAddCredential() {
+    const user = document.getElementById('cred-user').value;
+    const password = document.getElementById('cred-password').value;
+    if (!user || !password) {
+        alert('User and Password are required');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/user_credential', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ user, password })
+        });
+        if (res.ok) {
+            alert('Credential saved successfully!');
+            document.getElementById('credential-modal').style.display = 'none';
+        } else {
+            const err = await res.text();
+            alert('Failed: ' + err);
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+</script>
 </body>
 </html>`

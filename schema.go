@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -181,4 +182,160 @@ func (a *App) handleApiSchema(w http.ResponseWriter, r *http.Request) {
 		"must":    must,
 		"may":     may,
 	})
+}
+
+type SchemaDef struct {
+	CanEdit        bool              `json:"canEdit"`
+	ObjectClasses  []SchemaClassAttr `json:"objectClasses"`
+	AttributeTypes []SchemaAttrDef   `json:"attributeTypes"`
+}
+
+type SchemaClassAttr struct {
+	Raw  string   `json:"raw"`
+	DN   string   `json:"dn"`
+	Name string   `json:"name"`
+	Sup  []string `json:"sup"`
+	Must []string `json:"must"`
+	May  []string `json:"may"`
+}
+
+type SchemaAttrDef struct {
+	Raw    string `json:"raw"`
+	DN     string `json:"dn"`
+	Name   string `json:"name"`
+	Syntax string `json:"syntax"`
+	Desc   string `json:"desc"`
+}
+
+func parseAttributeType(at string) *SchemaAttrDef {
+	reName := regexp.MustCompile(`NAME\s+(?:\(\s*'([^']+)'|'([^']+)'|([a-zA-Z0-9_-]+))`)
+	reSyntax := regexp.MustCompile(`SYNTAX\s+([0-9.]+(?:\{\d+\})?)`)
+	reDesc := regexp.MustCompile(`DESC\s+'([^']+)'`)
+
+	def := &SchemaAttrDef{Raw: at}
+
+	if m := reName.FindStringSubmatch(at); len(m) > 0 {
+		if m[1] != "" {
+			def.Name = m[1]
+		} else if m[2] != "" {
+			def.Name = m[2]
+		} else {
+			def.Name = m[3]
+		}
+	}
+	if m := reSyntax.FindStringSubmatch(at); len(m) > 1 {
+		def.Syntax = m[1]
+	}
+	if m := reDesc.FindStringSubmatch(at); len(m) > 1 {
+		def.Desc = m[1]
+	}
+
+	syntaxMap := map[string]string{
+		"1.3.6.1.4.1.1466.115.121.1.15": "Directory String",
+		"1.3.6.1.4.1.1466.115.121.1.27": "Integer",
+		"1.3.6.1.4.1.1466.115.121.1.7":  "Boolean",
+		"1.3.6.1.4.1.1466.115.121.1.26": "IA5 String",
+		"1.3.6.1.4.1.1466.115.121.1.38": "OID",
+		"1.3.6.1.4.1.1466.115.121.1.40": "Octet String",
+		"1.3.6.1.4.1.1466.115.121.1.50": "Telephone Number",
+		"1.3.6.1.4.1.1466.115.121.1.24": "Generalized Time",
+	}
+
+	if readable, ok := syntaxMap[def.Syntax]; ok {
+		def.Syntax = fmt.Sprintf("%s (%s)", readable, def.Syntax)
+	}
+
+	return def
+}
+
+func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
+	conn, err := getLDAPConn(r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	req := ldap.NewSearchRequest("cn=schema,cn=config", ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"olcObjectClasses", "olcAttributeTypes", "cn"}, nil)
+	res, err := conn.Search(req)
+	if err != nil {
+		http.Error(w, "Failed to read cn=schema,cn=config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var schemaDef SchemaDef
+
+	reqCheck := ldap.NewSearchRequest("cn=config", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"dn"}, nil)
+	if _, err := conn.Search(reqCheck); err == nil {
+		schemaDef.CanEdit = true
+	}
+
+	for _, entry := range res.Entries {
+		for _, ocStr := range entry.GetAttributeValues("olcObjectClasses") {
+			c := parseObjectClass(ocStr)
+			schemaDef.ObjectClasses = append(schemaDef.ObjectClasses, SchemaClassAttr{
+				Raw: ocStr, DN: entry.DN, Name: c.Name, Sup: c.Sup, Must: c.Must, May: c.May,
+			})
+		}
+		for _, atStr := range entry.GetAttributeValues("olcAttributeTypes") {
+			def := parseAttributeType(atStr)
+			def.DN = entry.DN
+			schemaDef.AttributeTypes = append(schemaDef.AttributeTypes, *def)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schemaDef)
+}
+
+func (a *App) handleApiSchemaManagerModify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	conn, err := getLDAPConn(r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	var req struct {
+		DN        string   `json:"dn"`
+		Attribute string   `json:"attribute"`
+		Values    []string `json:"values"`
+		AdminDN   string   `json:"adminDn"`
+		AdminPwd  string   `json:"adminPwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var editConn *ldap.Conn
+	if req.AdminDN != "" && req.AdminPwd != "" {
+		editConn, err = dialLDAP(a.cfg.LDAPServer, 5*time.Second)
+		if err != nil {
+			http.Error(w, "Failed to connect with admin credentials: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer editConn.Close()
+		if err := editConn.Bind(req.AdminDN, req.AdminPwd); err != nil {
+			http.Error(w, "Admin bind failed: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+	} else {
+		editConn = conn
+	}
+
+	modifyReq := ldap.NewModifyRequest(req.DN, nil)
+	modifyReq.Add(req.Attribute, req.Values)
+
+	if err := editConn.Modify(modifyReq); err != nil {
+		http.Error(w, "Failed to modify schema: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

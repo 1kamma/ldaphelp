@@ -1,7 +1,8 @@
 package main
 
 import (
-	"errors"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -25,18 +26,39 @@ type UISettings struct {
 	ContextMenu []ContextMenuAction `yaml:"context_menu" json:"context_menu"`
 }
 
+type SSOSettings struct {
+	SAML SAMLSettings `yaml:"saml" json:"saml"`
+	OIDC OIDCSettings `yaml:"oidc" json:"oidc"`
+}
+
+type SAMLSettings struct {
+	Enabled   bool   `yaml:"enabled" json:"enabled"`
+	IdPURL    string `yaml:"idp_url" json:"idp_url"`
+	EntityID  string `yaml:"entity_id" json:"entity_id"`
+	Cert      string `yaml:"cert" json:"cert"`
+}
+
+type OIDCSettings struct {
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	IssuerURL    string `yaml:"issuer_url" json:"issuer_url"`
+	ClientID     string `yaml:"client_id" json:"client_id"`
+	ClientSecret string `yaml:"client_secret" json:"client_secret"`
+}
+
 type Settings struct {
+	SSO     SSOSettings               `yaml:"sso" json:"sso"`
 	UI      UISettings                `yaml:"ui" json:"ui"`
 	Objects map[string]ObjectTemplate `yaml:"objects" json:"objects"`
 }
 
 type Config struct {
-	LDAPServer string   `yaml:"ldap_server"`
-	Base       string   `yaml:"base"`
-	Attribute  string   `yaml:"attribute"`
-	NtfyURI    string   `yaml:"ntfy_uri"`
-	Settings   Settings `yaml:"settings"`
-	Server     Server   `yaml:"server"`
+	LDAPServer    string   `yaml:"ldap_server"`
+	Base          string   `yaml:"base"`
+	Attribute     string   `yaml:"attribute"`
+	NtfyURI       string   `yaml:"ntfy_uri"`
+	EncryptionKey string   `yaml:"encryption_key"`
+	Settings      Settings `yaml:"settings"`
+	Server        Server   `yaml:"server"`
 }
 
 type Server struct {
@@ -50,15 +72,22 @@ type Credentials struct {
 	BindPassword string
 }
 
+func generateEncryptionKey() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
 func LoadConfig(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			emptyCfg := Config{
-				LDAPServer: "",
-				Base:       "",
-				Attribute:  "",
-				NtfyURI:    "",
+				LDAPServer:    "",
+				Base:          "",
+				Attribute:     "",
+				NtfyURI:       "",
+				EncryptionKey: generateEncryptionKey(),
 				Settings: Settings{
 					UI: UISettings{
 						Theme: "dark",
@@ -127,15 +156,4 @@ func (c Config) Validate() error {
 		return fmt.Errorf("missing required field(s): %s", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-func LoadCredentialsFromEnv() (Credentials, error) {
-	creds := Credentials{
-		BindDN:       strings.TrimSpace(os.Getenv("LDAP_BIND_DN")),
-		BindPassword: os.Getenv("LDAP_BIND_PASSWORD"),
-	}
-	if creds.BindDN == "" || creds.BindPassword == "" {
-		return Credentials{}, errors.New("missing LDAP_BIND_DN or LDAP_BIND_PASSWORD in environment")
-	}
-	return creds, nil
 }

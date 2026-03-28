@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"log/slog"
@@ -8,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/go-ldap/ldap/v3"
 )
 
 type App struct {
@@ -66,12 +70,17 @@ func main() {
 	mux.HandleFunc("/api/children", app.handleApiChildren)
 	mux.HandleFunc("/api/entry", app.handleApiEntry)
 	mux.HandleFunc("/api/schema", app.handleApiSchema)
+	mux.HandleFunc("/api/schema_manager", app.handleApiSchemaManagerList)
+	mux.HandleFunc("/api/schema_modify", app.handleApiSchemaManagerModify)
 	mux.HandleFunc("/api/modify", app.handleApiModify)
 	mux.HandleFunc("/api/password", app.handleApiPassword)
 	mux.HandleFunc("/api/search", app.handleApiSearch)
 	mux.HandleFunc("/api/delete", app.handleApiDelete)
 	mux.HandleFunc("/api/move", app.handleApiMove)
 	mux.HandleFunc("/api/create", app.handleApiCreate)
+	mux.HandleFunc("/api/next_id", app.handleApiNextID)
+	mux.HandleFunc("/api/user_credential", app.handleApiUserCredential)
+	// mux.HandleFunc("/api/rebind", app.handleApiRebind)
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			app.handleApiSettingsPost(w, r)
@@ -127,11 +136,21 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 					</div>
 					<button type="submit">Login</button>
 				</form>
+				{{if or .SAMLEnabled .OIDCEnabled}}
+				<hr style="border: 0; border-top: 1px solid #444; margin: 20px 0;">
+				<div style="text-align: center; color: #bbb; margin-bottom: 10px;">Or log in with</div>
+				{{if .SAMLEnabled}}
+				<button type="button" style="background: #8b5cf6; margin-bottom: 10px;" onclick="location.href='/login/saml'">Login with SAML</button>
+				{{end}}
+				{{if .OIDCEnabled}}
+				<button type="button" style="background: #10b981;" onclick="location.href='/login/oidc'">Login with OIDC</button>
+				{{end}}
+				{{end}}
 			</div>
 		</body>
 		</html>
 		`))
-		tmpl.Execute(w, nil)
+		tmpl.Execute(w, map[string]interface{}{"SAMLEnabled": a.cfg.Settings.SSO.SAML.Enabled, "OIDCEnabled": a.cfg.Settings.SSO.OIDC.Enabled})
 		return
 	}
 
@@ -165,4 +184,75 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	session.Options.MaxAge = -1
 	session.Save(r, w)
 	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+func (a *App) handleApiUserCredential(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session, _ := store.Get(r, "ldap-session")
+	ownerDN, ok := session.Values["dn"].(string)
+	if !ok || ownerDN == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	targetDN := req.User
+	if !strings.Contains(targetDN, "=") {
+		conn, err := getLDAPConn(r, a.cfg)
+		if err != nil {
+			http.Error(w, "Failed to connect to LDAP", http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+
+		searchReq := ldap.NewSearchRequest(
+			"", ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			fmt.Sprintf("(|(uid=%s)(cn=%s)(sn=%s))", ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User)),
+			[]string{"dn"}, nil,
+		)
+
+		var foundDN string
+		searchReq.BaseDN = a.cfg.Base
+		res, err := conn.Search(searchReq)
+		if err == nil && len(res.Entries) > 0 {
+			foundDN = res.Entries[0].DN
+		}
+
+		if foundDN == "" {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+		targetDN = foundDN
+	}
+
+	// Verify password
+	conn, err := dialLDAP(a.cfg.LDAPServer, 8*time.Second)
+	if err != nil {
+		http.Error(w, "Failed to connect to LDAP", http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+	if err := conn.Bind(targetDN, req.Password); err != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if err := SaveUserCredential(ownerDN, targetDN, req.Password, a.cfg.EncryptionKey); err != nil {
+		http.Error(w, "Failed to save credential", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

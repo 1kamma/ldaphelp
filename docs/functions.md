@@ -1,0 +1,205 @@
+# LDAPHelp Function Reference
+
+This document provides a comprehensive reference for all the major functions and methods used across the `ldaphelp` application. Each section details both the high-level purpose of the function and the underlying technical mechanisms that power it.
+
+## Core Application (`main.go`)
+
+### `main()`
+
+The `main` function serves as the primary entry point for the LDAPHelp application. Upon startup, it handles bootstrapping the environment by initializing the local SQLite database, establishing a structured JSON logger via the standard `log/slog` package, and invoking the configuration loader to read or generate the `config.yaml` file. 
+
+Once the dependencies and state are established, it initializes an `http.ServeMux` to define all routing pathways for both the frontend HTML views and the backend JSON APIs. Finally, it binds the web server to port `8080` and begins listening for incoming connections, effectively launching the application daemon.
+
+### `notify(uri string, message string)`
+
+This function acts as the asynchronous event dispatcher for the application's push notification system. It expects a target URI (such as an `ntfy.sh` topic endpoint) and a plaintext message detailing the event that just occurred, such as a user logging in, modifying an attribute, or deleting a node.
+
+To ensure that slow or unresponsive notification servers do not drag down the performance of the LDAP web application, this function immediately spins off a separate Go routine. Inside this routine, it creates an HTTP POST request bounded by a strict 5-second timeout, allowing the main HTTP handler to instantly respond to the user while the push notification is delivered in the background.
+
+### `(*App) handleLogin(w http.ResponseWriter, r *http.Request)`
+
+The `handleLogin` method acts as the gateway for user authentication. When a user navigates to the application via an HTTP GET request, this function serves a cleanly styled HTML login interface. It also captures any session or authentication error messages and injects them directly into the template so the user is aware of what went wrong during their previous attempt.
+
+When an HTTP POST request is received, the method intercepts the submitted form data and passes the provided username and password to the core `AuthenticateUser` LDAP mechanism. Upon a successful bind, it establishes a secure, HTTP-only gorilla session cookie containing the user's Distinguished Name (DN) and password. Finally, it logs the login event, dispatches a push notification, and redirects the client to the main `/browse` application view.
+
+### `(*App) handleLogout(w http.ResponseWriter, r *http.Request)`
+
+This function provides a secure mechanism for users to terminate their active sessions. When triggered, it retrieves the current user's session from the cookie store and identifies the DN associated with the active authentication state.
+
+It then modifies the session cookie's MaxAge parameter to a negative value, effectively instructing the user's web browser to delete the cookie immediately. Before terminating the request, it fires off a logout notification to the configured push service and redirects the user back to the login page, ensuring no authenticated context remains active in the browser.
+
+---
+
+## Configuration & Database (`config.go`, `db.go`)
+
+### `LoadConfig(path string) (Config, error)`
+
+The `LoadConfig` function is responsible for reading the application's YAML configuration file from the disk and unmarshaling it into a strongly typed Go structure. It acts as the definitive source of truth for connecting to the upstream LDAP server and defining the baseline visual parameters.
+
+To improve the onboarding experience, this function features an auto-generation safety net. If the specified file does not exist, it instantly creates a boilerplate `config.yaml` populated with empty connection strings and default layout configurations. It then halts execution to prompt the administrator to fill out the newly created file, preventing silent failures or confusing crashes. It also automatically merges the active configuration with any settings stored inside the local SQLite database.
+
+### `(*Config) Validate() error`
+
+This method acts as a strict schema enforcer for the `Config` struct. After the configuration is parsed from the disk, this validation routine ensures that all mandatory fields required for fundamental operation are present and correctly formatted.
+
+Specifically, it checks that the `ldap_server` and `attribute` (used for login searches) fields are not empty strings. If any essential parameter is missing, it aggregates the missing keys into a human-readable error message and forcefully halts the application startup process, guaranteeing the system never boots into an unstable or unreachable state.
+
+### `initDB() error`
+
+This function handles the instantiation of the local persistent storage layer. It attempts to open a connection to an SQLite database file named `ldaphelp.db` in the current working directory, pulling in the `github.com/mattn/go-sqlite3` driver bindings.
+
+Once the connection pool is established, it executes a preliminary SQL schema definition check. It creates a table named `settings` if it does not already exist, defining an auto-incrementing primary key and a text field designed to hold serialized JSON data. This ensures that the application can seamlessly store frontend layout preferences without requiring an external database cluster.
+
+### `LoadSettingsFromDB() (Settings, error)`
+
+The `LoadSettingsFromDB` method bridges the gap between the persistent SQLite storage and the application's runtime configuration. It queries the database specifically for the global settings entry (ID 1) and retrieves the raw JSON text stored within.
+
+If no rows are found—which is typical during a fresh installation—it gracefully returns an empty `Settings` object without raising an error. If data is successfully retrieved, it unmarshals the JSON directly into the application's `Settings` struct, overriding file-based defaults with the administrator's most recent runtime UI configurations.
+
+### `SaveSettingsToDB(s Settings) error`
+
+This function is the primary write path for persisting user interface modifications. Whenever an administrator changes their theme, updates their context menu actions, or modifies Quick Create templates from the web UI, this function is invoked.
+
+It takes the newly modified `Settings` struct, serializes it into a standard JSON string, and executes an `INSERT OR REPLACE` SQL query against the database. This upsert operation ensures that the UI state is instantly saved to disk, surviving application restarts or container rebuilds.
+
+### Credentials Encryption (`SaveCredentialsToDB`, `LoadCredentialsFromDB`)
+
+The application securely stores sensitive LDAP bind passwords in the local SQLite database. The `config.go` structure utilizes an `EncryptionKey`, which must be a 32-byte AES key. The functions `SaveCredentialsToDB` and `LoadCredentialsFromDB` in `db.go` handle the AES-GCM encryption and decryption of the `BindPassword` before it is persisted or loaded. To facilitate easy deployment, two helper scripts (`scripts/generate_key.sh` and `scripts/generate_key.go`) have been provided to generate cryptographically secure random 32-byte keys for immediate use in the configuration.
+
+---
+
+## LDAP Utilities & Security (`ldap.go`)
+
+### `dialLDAP(serverURL string, timeout time.Duration) (*ldap.Conn, error)`
+
+The `dialLDAP` function abstracts the complexity of establishing TCP connections to external LDAP directories. It takes an LDAP or LDAPS server URL and a strictly enforced timeout duration to prevent the application from hanging indefinitely if the network drops.
+
+By utilizing Go's native `net.Dialer` paired with the `go-ldap` library's `DialWithDialer` option, it safely negotiates the connection protocol based on the URL scheme provided in the configuration. This ensures seamless compatibility whether the administrator is targeting a standard plaintext `ldap://` port or a secure `ldaps://` endpoint.
+
+### `AuthenticateUser(cfg Config, username, password string, timeout time.Duration) (string, error)`
+
+This highly dynamic function is the core of the application's authentication matrix. Instead of relying on a single login method, it analyzes the incoming `username` string and routes the authentication attempt through multiple logical fallback paths. If the string explicitly contains an equals sign (e.g., `uid=bob,ou=users`), it attempts to bind to the directory using the string as a literal Distinguished Name immediately.
+
+If the user logs in as `admin` or `Manager`, it attempts a brute-force sweep across common administrative DN permutations (like `cn=admin,cn=config` or `cn=Directory Manager`) to securely log into the configuration partitions. For standard users, it falls back to conducting a broad subtree search across the directory, looking for the specific configuration attribute (like `uid`) matching the username, extracting their exact DN, and binding against it with the supplied password to verify their identity.
+
+### `MakeSSHA(password string) (string, error)`
+
+The `MakeSSHA` function provides crucial cryptographic enforcement for user creation and password resets. When a plaintext password is submitted, this function generates four bytes of cryptographically secure random salt utilizing the system's `crypto/rand` package.
+
+It then pipes the plaintext password and the random salt into a SHA-1 hashing algorithm. The resulting binary checksum is appended with the salt itself, Base64-encoded, and prefixed with the `{SSHA}` tag. This mechanism produces the exact payload format natively expected by OpenLDAP and 389 Directory Server, guaranteeing safe credential handling.
+
+---
+
+## Schema Parsing (`schema.go`)
+
+### `parseList(s string) []string`
+
+This utility function cleans up and standardizes array representations extracted from raw LDAP schema payloads. In RFC 4512 format, attributes like `MUST` and `MAY` often contain complex parenthesis and dollar-sign (`$`) delimitations.
+
+The function strips away any leading or trailing whitespace and grouping parentheses. It then splits the string by the `$` delimiter, trims quotation marks from the resulting fragments, and returns a clean Go slice of strings. This provides the downstream parsers with a highly reliable and iterated list of attribute names.
+
+### `parseObjectClass(oc string) *SchemaClass`
+
+The `parseObjectClass` function acts as a robust text extractor for LDAP schema definitions. It utilizes complex regular expressions designed to navigate the highly variable and sometimes poorly formatted nature of `objectClasses` strings returned by an LDAP server's subschema entry.
+
+It dynamically hunts for the `NAME` tag to identify the class, the `SUP` tag to determine which parent objects it inherits from, and the `MUST` and `MAY` groupings to extract the exact structural requirements for building that object. It gracefully handles different syntactical standards (e.g., single quotes vs. bare words) and maps the results into a unified `SchemaClass` pointer.
+
+### `getResolvedSchema(conn *ldap.Conn, targetClasses []string) (classes, must, may []string, err error)`
+
+This complex analytical function is responsible for determining exactly what attributes are required to create or modify a specific object inside the directory. It begins by querying the directory's Root DSE for its `subschemaSubentry`, pulling down the global list of all defined object classes.
+
+Once the entire schema dictionary is mapped into memory, it performs a recursive depth-first search (DFS) through the inheritance tree of the requested `targetClasses`. As it traverses upwards through parent classes (such as resolving `inetOrgPerson` up through `organizationalPerson`, `person`, and `top`), it deduplicates and merges every mandatory (`MUST`) and optional (`MAY`) attribute. The result is a clean, comprehensive map of exactly what fields the frontend creation modal needs to render.
+
+### Schema Manager Functionality
+
+The application now robustly supports dynamic schema inspection. It maps OIDs to human-readable names for internal representations of `olcObjectClasses` and `olcAttributeTypes`. This enables the new Schema Manager UI to visualize complex structural definitions cleanly and prepares the parsed data structures for dynamic modification injections into specific configuration trees like `cn=schema,cn=config`.
+
+---
+
+## API & Browser Flow (`browser.go`)
+
+### `getLDAPConn(r *http.Request, cfg Config) (*ldap.Conn, error)`
+
+This essential middleware-like helper securely retrieves the user's active connection state on every single backend API request. Because the server is entirely stateless, it must re-authenticate the user against the LDAP server to securely execute their requested commands.
+
+It extracts the encrypted session cookie from the incoming HTTP request, pulls out the user's Distinguished Name and stored password, and actively dials the LDAP server. By attempting an immediate bind with these stored credentials, it intrinsically validates that the user's account is still active and possesses the correct LDAP permissions to perform the action before returning the connected pointer.
+
+### `getNextID(conn *ldap.Conn, bases []string, attr string) string`
+
+This function solves the problem of auto-generating POSIX attributes (like `uidNumber` and `gidNumber`) when creating new UNIX accounts or groups. Instead of relying on an external state tracker, it treats the LDAP directory itself as the source of truth.
+
+It iterates through all available search bases, conducting a subtree search for any object containing the specified target attribute. It parses every found string value into a Go integer, tracks the maximum value discovered across the entire directory, and returns that maximum integer plus one. This guarantees a safe, collision-free auto-incrementing ID.
+
+### `(*App) handleBrowse`
+
+The `handleBrowse` method serves as the entry point for the frontend single-page application (SPA). When an authenticated user successfully navigates to `/browse`, this function intercepts the request and ensures their session contains a valid directory DN.
+
+If the user is valid, it compiles the application's HTML template, injects the JSON-marshaled application settings into the frontend JavaScript context, and writes the response. This tightly binds the backend configuration—such as Dark/Light mode and custom context menu options—directly into the browser's rendering engine before the DOM even loads.
+
+### `(*App) handleApiRoots`
+
+This API endpoint is responsible for bootstrapping the initial state of the left-hand navigation tree in the browser. Instead of guessing where the directory starts, it executes a base-object search against an empty DN to fetch the directory's Root DSE.
+
+From the Root DSE, it extracts all standard `namingContexts` (the primary domain trees), alongside operational partitions such as the `subschemaSubentry`, the `monitorContext`, and the `configContext`. It packages these root partitions into a JSON array and delivers them to the frontend, ensuring the user can interactively browse every accessible namespace the server provides.
+
+### `(*App) handleApiChildren`
+
+The `handleApiChildren` function implements the application's lazy-loading navigation capability. When a user clicks to expand a tree node in the UI, this endpoint is hit with the DN of the expanded container.
+
+The backend responds by issuing a `ScopeSingleLevel` LDAP search targeting that specific DN. It retrieves all immediate child entries, extracts their Relative Distinguished Names (RDNs) by safely splitting the strings, flags them as having potential children of their own, and returns the formatted JSON array back to the frontend to populate the DOM list.
+
+### `(*App) handleApiEntry`
+
+This endpoint fetches the full attribute payload for a specific directory entry when a user clicks on it in the UI. It receives a target DN from the query string and securely binds to the directory using the requester's session credentials.
+
+It executes a `ScopeBaseObject` search against the target DN, utilizing special wildcard flags (`*` and `+`) to request both standard user attributes and internal operational attributes. It then maps the resulting LDAP entry into a clean string-slice dictionary, returning it as a JSON payload so the frontend can populate the right-side properties table.
+
+### `(*App) handleApiCreate`
+
+The `handleApiCreate` method translates frontend form submissions into full LDAP object instantiation. It parses an incoming JSON payload containing a target DN and a dictionary of attributes generated by the Quick Create modal.
+
+Before executing the LDAP `AddRequest`, it performs a series of intelligent interventions. It verifies that a structural object class exists (auto-injecting `account` if a raw `posixAccount` auxiliary is detected), dynamically auto-increments missing `uidNumber` and `gidNumber` fields, and intercepts plaintext `userPassword` strings to securely hash them via `MakeSSHA`. Once the payload is sanitized and normalized, it commits the object to the directory and dispatches a push notification.
+
+### `(*App) handleApiModify`
+
+This endpoint acts as the primary data mutator for the application, handling all attribute-level changes when an administrator utilizes the Edit button in the UI. It consumes a JSON payload containing dictionaries mapped to specific LDAP modification behaviors: `replace` (updating values), `add` (appending new fields), and `delete` (removing fields).
+
+It maps these arrays to their respective operations on an LDAP `ModifyRequest` structure. This ensures that the backend cleanly translates complex frontend UI actions—such as clicking the 'X' button to delete an attribute or typing a new value into an existing text box—into a single, atomic, transactional update against the directory server.
+
+### `(*App) handleApiMove`
+
+The `handleApiMove` function powers the drag-and-drop hierarchy management features in the UI. It receives a JSON request containing both the original source DN of the object and the target destination DN where it was dropped.
+
+To process this safely, it string-splits the target DN into the new Relative Distinguished Name (RDN) and the new superior container path. It executes an LDAP `ModifyDNRequest`, actively flagging the operation to delete the old RDN. This effectively renames and relocates the object in a single transaction, broadcasting a push notification summarizing the move upon success.
+
+### `(*App) handleApiDelete`
+
+This simple but highly critical function removes objects entirely from the directory tree. It extracts the target DN passed via query parameters from the frontend's confirmation prompt.
+
+Using the authenticated session context, it submits an LDAP `DelRequest`. Since standard LDAP servers strictly prevent the deletion of containers that still possess child nodes, this operation acts naturally as a safe "leaf-node only" removal protocol. Upon a successful deletion, it alerts the notification system and replies with an HTTP 200 OK to trigger a UI refresh.
+
+### `(*App) handleApiPassword`
+
+The `handleApiPassword` method handles dedicated cryptographic credential overrides. When an administrator right-clicks a user node and selects "Set Password", this route receives the target DN alongside a plaintext string payload.
+
+It intercepts this plaintext string and immediately passes it through the `MakeSSHA` hashing utility. The securely salted and base64-encoded string is then loaded into an LDAP `ModifyRequest` targeted strictly at the `userPassword` attribute, ensuring that the password is replaced safely according to strict LDAP cryptographic storage standards.
+
+### `(*App) handleApiSearch`
+
+This highly dynamic endpoint provides the backbone for the application's context menu pop-ups, such as the modal for adding users to specific groups. It expects a raw LDAP filter string (e.g., `(&(objectClass=posixAccount)(!(uid=bob)))`) passed via the query parameters.
+
+If the configuration lacks a predefined base, the function will dynamically iterate across all global `namingContexts` discovered from the Root DSE. It performs a subtree search across these partitions, executing the complex filtering logic directly against the LDAP engine, and aggregating a clean JSON array of matching Distinguished Names to return to the frontend for selection.
+
+### `(*App) handleApiSchemaManager`
+
+This endpoint handles `GET /api/schema_manager` requests to retrieve the currently active directory schema. It specifically lists the loaded `olcObjectClasses` and `olcAttributeTypes`, automatically mapping complex raw OIDs into human-readable names to populate the Schema Manager UI cleanly.
+
+### `(*App) handleApiSchemaModify`
+
+This endpoint processes `POST /api/schema_modify` requests to apply schema additions directly to the directory server. It accepts JSON payloads containing new `olcAttributeTypes` or `olcObjectClasses` definitions and dynamically injects them into specific configuration trees (such as `cn=schema,cn=config`) utilizing standard LDAP modify operations, allowing administrators to expand directory structure without manually drafting LDIF files.
+
+### `(*App) handleApiSettingsGet / Post`
+
+These matched handler functions manage the application's configuration state dynamically from the web interface. The `Get` handler simply encodes the active `App.cfg.Settings` struct into JSON and serves it to the browser to populate the Settings Modal text area.
+
+The `Post` handler absorbs a newly customized JSON payload, actively unmarshals it over the running configuration in memory, and triggers `SaveSettingsToDB` to instantly persist the new state to the SQLite storage. This dual-path system guarantees that layout themes, context menu buttons, and quick-create templates can be updated and applied on the fly without a server restart.
