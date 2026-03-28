@@ -32,10 +32,10 @@ type SSOSettings struct {
 }
 
 type SAMLSettings struct {
-	Enabled   bool   `yaml:"enabled" json:"enabled"`
-	IdPURL    string `yaml:"idp_url" json:"idp_url"`
-	EntityID  string `yaml:"entity_id" json:"entity_id"`
-	Cert      string `yaml:"cert" json:"cert"`
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	IdPURL   string `yaml:"idp_url" json:"idp_url"`
+	EntityID string `yaml:"entity_id" json:"entity_id"`
+	Cert     string `yaml:"cert" json:"cert"`
 }
 
 type OIDCSettings struct {
@@ -46,9 +46,10 @@ type OIDCSettings struct {
 }
 
 type Settings struct {
-	SSO     SSOSettings               `yaml:"sso" json:"sso"`
-	UI      UISettings                `yaml:"ui" json:"ui"`
-	Objects map[string]ObjectTemplate `yaml:"objects" json:"objects"`
+	SSO          SSOSettings               `yaml:"sso" json:"sso"`
+	UI           UISettings                `yaml:"ui" json:"ui"`
+	Objects      map[string]ObjectTemplate `yaml:"objects" json:"objects"`
+	DefaultGroup string                    `yaml:"default_group" json:"default_group"`
 }
 
 type Config struct {

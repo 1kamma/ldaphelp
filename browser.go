@@ -220,10 +220,10 @@ func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DN      string            `json:"dn"`
+		DN      string              `json:"dn"`
 		Replace map[string][]string `json:"replace"`
 		Add     map[string][]string `json:"add"`
-		Delete  []string          `json:"delete"`
+		Delete  []string            `json:"delete"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -325,6 +325,40 @@ func (a *App) handleApiMove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (a *App) handleApiDefaultGid(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if a.cfg.Settings.DefaultGroup == "" {
+		w.Write([]byte(""))
+		return
+	}
+
+	conn, err := getLDAPConn(r, a.cfg)
+	if err != nil {
+		http.Error(w, "Failed to connect to LDAP", http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+
+	searchReq := ldap.NewSearchRequest(
+		a.cfg.Settings.DefaultGroup,
+		ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
+		"(objectClass=*)",
+		[]string{"gidNumber"}, nil,
+	)
+
+	res, err := conn.Search(searchReq)
+	if err != nil || len(res.Entries) == 0 {
+		w.Write([]byte(""))
+		return
+	}
+
+	gid := res.Entries[0].GetAttributeValue("gidNumber")
+	w.Write([]byte(gid))
+}
 
 func (a *App) handleApiNextID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -664,17 +698,20 @@ const browseHTML = `<!doctype html>
   <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
     <div class="modal-content" style="max-height: 80vh; overflow-y: auto; width: 600px;">
       <h3>Settings</h3>
-      
+
       <h4>Theme & Context Menu (JSON)</h4>
       <textarea id="settings-ui-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
 
       <h4>Quick Create Objects (JSON)</h4>
       <textarea id="settings-objects-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
 
+      <h4>Default posixGroup DN (for gidNumber)</h4>
+      <input type="text" id="settings-default-group" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
+
       <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
 
       <h3>SSO Connections</h3>
-      
+
       <h4>SAML</h4>
       <label><input type="checkbox" id="saml-enabled"> Enabled</label><br>
       <input type="text" id="saml-idp" class="input-field" placeholder="IdP URL" style="width: 100%; margin-top: 5px;" />
@@ -984,21 +1021,21 @@ const browseHTML = `<!doctype html>
     async function nextAddObjectClass() {
         const objName = document.getElementById('add-oc-name').value.trim();
         if (!objName) return;
-        
+
         const res = await fetch('/api/schema?oc=' + encodeURIComponent(objName));
         if (!res.ok) {
             alert("Failed to fetch schema for " + objName);
             return;
         }
         const schema = await res.json();
-        
+
         const existing = Object.keys(currentEntryData).map(k => k.toLowerCase());
         const missingMust = (schema.must || []).filter(a => !existing.includes(a.toLowerCase()));
-        
+
         const container = document.getElementById('add-oc-attrs');
         container.innerHTML = '<h4>Required Missing Attributes:</h4>';
         container.style.display = 'block';
-        
+
         for (const attr of missingMust) {
             const row = document.createElement('div');
             row.style.marginBottom = '5px';
@@ -1014,29 +1051,47 @@ const browseHTML = `<!doctype html>
             input.style.background = 'var(--bg)';
             input.style.color = 'var(--text)';
             input.style.border = '1px solid var(--border)';
-            
-            if (attr.toLowerCase() === 'uidnumber' || attr.toLowerCase() === 'gidnumber') {
-                const nextIdRes = await fetch('/api/next_id?attr=' + encodeURIComponent(attr));
+
+            if (attr.toLowerCase() === 'uidnumber') {
+                row.style.display = 'none';
+                input.type = 'hidden';
+                const nextIdRes = await fetch('/api/next_id?attr=uidnumber');
                 if (nextIdRes.ok) {
                     input.value = await nextIdRes.text();
                 }
+            } else if (attr.toLowerCase() === 'gidnumber') {
+                const defGidRes = await fetch('/api/default_gid');
+                const defGid = await defGidRes.text();
+                if (defGid) {
+                    input.value = defGid;
+                } else {
+                    const nextIdRes = await fetch('/api/next_id?attr=gidnumber');
+                    if (nextIdRes.ok) {
+                        input.value = await nextIdRes.text();
+                    }
+                }
+            } else if (attr.toLowerCase() === 'uid') {
+                const cnKey = Object.keys(currentEntryData).find(k => k.toLowerCase() === 'cn');
+                if (cnKey && currentEntryData[cnKey].length > 0) {
+                    input.value = currentEntryData[cnKey][0];
+                }
             }
-            
+
             row.appendChild(label);
             row.appendChild(input);
             container.appendChild(row);
         }
-        
+
         document.getElementById('btn-submit-oc').style.display = 'block';
     }
 
     async function submitAddObjectClass() {
         const objName = document.getElementById('add-oc-name').value.trim();
         if (!objName) return;
-        
+
         const inputs = document.querySelectorAll('.oc-attr-input');
         const reqData = { dn: currentEntryDN, add: { objectclass: [objName] }, replace: {}, delete: {} };
-        
+
         let allFilled = true;
         inputs.forEach(input => {
             const val = input.value.trim();
@@ -1046,18 +1101,18 @@ const browseHTML = `<!doctype html>
                 reqData.add[input.dataset.attr] = [val];
             }
         });
-        
+
         if (!allFilled) {
             alert("Please fill all required missing attributes.");
             return;
         }
-        
+
         const res = await fetch('/api/modify', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(reqData)
         });
-        
+
         if (res.ok) {
             document.getElementById('add-oc-panel').style.display = 'none';
             loadEntry(currentEntryDN);
@@ -1090,7 +1145,7 @@ const browseHTML = `<!doctype html>
         const attr = document.getElementById('add-attr-select').value;
         const val = document.getElementById('add-attr-val').value;
         if (!attr || val === "") return;
-        
+
         const res = await fetch('/api/modify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1227,7 +1282,8 @@ const browseHTML = `<!doctype html>
             const data = await res.json();
             document.getElementById('settings-ui-json').value = JSON.stringify(data.ui || {}, null, 2);
             document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
-            
+            document.getElementById('settings-default-group').value = data.default_group || '';
+
             document.getElementById('saml-enabled').checked = data.sso?.saml?.enabled || false;
             document.getElementById('saml-idp').value = data.sso?.saml?.idp_url || '';
             document.getElementById('saml-entity').value = data.sso?.saml?.entity_id || '';
@@ -1248,10 +1304,11 @@ const browseHTML = `<!doctype html>
         try {
             const ui = JSON.parse(document.getElementById('settings-ui-json').value || '{}');
             const objects = JSON.parse(document.getElementById('settings-objects-json').value || '{}');
-            
+
             const newSettings = {
                 ui: ui,
                 objects: objects,
+                default_group: document.getElementById('settings-default-group').value,
                 sso: {
                     saml: {
                         enabled: document.getElementById('saml-enabled').checked,
@@ -1267,7 +1324,7 @@ const browseHTML = `<!doctype html>
                     }
                 }
             };
-            
+
             const res = await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1542,8 +1599,6 @@ const browseHTML = `<!doctype html>
         }
     }
 
-        }
-    }
 
     loadRoots();
   </script>

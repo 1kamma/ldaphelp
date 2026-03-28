@@ -79,6 +79,7 @@ func main() {
 	mux.HandleFunc("/api/move", app.handleApiMove)
 	mux.HandleFunc("/api/create", app.handleApiCreate)
 	mux.HandleFunc("/api/next_id", app.handleApiNextID)
+	mux.HandleFunc("/api/default_gid", app.handleApiDefaultGid)
 	mux.HandleFunc("/api/user_credential", app.handleApiUserCredential)
 	// mux.HandleFunc("/api/rebind", app.handleApiRebind)
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
