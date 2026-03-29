@@ -163,7 +163,7 @@ func (a *App) handleApiSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	ocs := strings.Split(oc, ",")
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -249,7 +249,7 @@ func parseAttributeType(at string) *SchemaAttrDef {
 }
 
 func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -294,7 +294,7 @@ func (a *App) handleApiSchemaManagerModify(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return

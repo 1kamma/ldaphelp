@@ -41,12 +41,36 @@ type TreeNode struct {
 	HasChildren   bool     `json:"hasChildren"`
 }
 
-func getLDAPConn(r *http.Request, cfg Config) (*ldap.Conn, error) {
+func getLDAPConn(w http.ResponseWriter, r *http.Request, cfg Config) (*ldap.Conn, error) {
 	session, _ := store.Get(r, "ldap-session")
 	dn, ok1 := session.Values["dn"].(string)
 	pwd, ok2 := session.Values["password"].(string)
 	if !ok1 || !ok2 {
+		if w != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
 		return nil, fmt.Errorf("unauthorized")
+	}
+
+	created, okC := session.Values["created"].(int64)
+	lastActive, okL := session.Values["last_active"].(int64)
+	if okC && okL {
+		now := time.Now().Unix()
+		ttlMax := created + int64(cfg.Settings.Session.TTLMinutes)*60
+		idleMax := lastActive + int64(cfg.Settings.Session.IdleMinutes)*60
+
+		if now > ttlMax || now > idleMax {
+			session.Options.MaxAge = -1
+			if w != nil {
+				session.Save(r, w)
+				http.Error(w, "session expired", http.StatusUnauthorized)
+			}
+			return nil, fmt.Errorf("session expired")
+		}
+		session.Values["last_active"] = now
+		if w != nil {
+			session.Save(r, w)
+		}
 	}
 
 	conn, err := dialLDAP(cfg.LDAPServer, 5*time.Second)
@@ -70,6 +94,23 @@ func (a *App) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+
+	created, okC := session.Values["created"].(int64)
+	lastActive, okL := session.Values["last_active"].(int64)
+	if okC && okL {
+		now := time.Now().Unix()
+		ttlMax := created + int64(a.cfg.Settings.Session.TTLMinutes)*60
+		idleMax := lastActive + int64(a.cfg.Settings.Session.IdleMinutes)*60
+		if now > ttlMax || now > idleMax {
+			session.Options.MaxAge = -1
+			session.Save(r, w)
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		session.Values["last_active"] = now
+		session.Save(r, w)
+	}
+
 	slog.Info("rendering browse for user", "dn", dn)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -93,7 +134,7 @@ func (a *App) handleBrowse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -140,7 +181,7 @@ func (a *App) handleApiChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -195,7 +236,7 @@ func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -230,7 +271,7 @@ func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -266,7 +307,7 @@ func (a *App) handleApiDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -296,7 +337,7 @@ func (a *App) handleApiMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -336,7 +377,7 @@ func (a *App) handleApiDefaultGid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, "Failed to connect to LDAP", http.StatusInternalServerError)
 		return
@@ -370,7 +411,7 @@ func (a *App) handleApiNextID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing attr", http.StatusBadRequest)
 		return
 	}
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -421,7 +462,7 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -526,7 +567,7 @@ func (a *App) handleApiPassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -559,7 +600,7 @@ func (a *App) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing filter", http.StatusBadRequest)
 		return
 	}
-	conn, err := getLDAPConn(r, a.cfg)
+	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -707,6 +748,12 @@ const browseHTML = `<!doctype html>
 
       <h4>Default posixGroup DN (for gidNumber)</h4>
       <input type="text" id="settings-default-group" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
+
+      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
+
+      <h3>Session Settings</h3>
+      <label>TTL (minutes): <input type="number" id="settings-session-ttl" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label><br>
+      <label style="margin-top: 10px; display: inline-block;">Idle (minutes): <input type="number" id="settings-session-idle" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label>
 
       <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
 
@@ -1296,6 +1343,9 @@ const browseHTML = `<!doctype html>
             document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
             document.getElementById('settings-default-group').value = data.default_group || '';
 
+            document.getElementById('settings-session-ttl').value = data.session?.ttl_minutes || 1440;
+            document.getElementById('settings-session-idle').value = data.session?.idle_minutes || 60;
+
             document.getElementById('saml-enabled').checked = data.sso?.saml?.enabled || false;
             document.getElementById('saml-idp').value = data.sso?.saml?.idp_url || '';
             document.getElementById('saml-entity').value = data.sso?.saml?.entity_id || '';
@@ -1321,6 +1371,10 @@ const browseHTML = `<!doctype html>
                 ui: ui,
                 objects: objects,
                 default_group: document.getElementById('settings-default-group').value,
+                session: {
+                    ttl_minutes: parseInt(document.getElementById('settings-session-ttl').value, 10) || 1440,
+                    idle_minutes: parseInt(document.getElementById('settings-session-idle').value, 10) || 60
+                },
                 sso: {
                     saml: {
                         enabled: document.getElementById('saml-enabled').checked,

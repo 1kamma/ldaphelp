@@ -45,11 +45,17 @@ type OIDCSettings struct {
 	ClientSecret string `yaml:"client_secret" json:"client_secret"`
 }
 
+type SessionSettings struct {
+	TTLMinutes  int `yaml:"ttl_minutes" json:"ttl_minutes"`
+	IdleMinutes int `yaml:"idle_minutes" json:"idle_minutes"`
+}
+
 type Settings struct {
 	SSO          SSOSettings               `yaml:"sso" json:"sso"`
 	UI           UISettings                `yaml:"ui" json:"ui"`
 	Objects      map[string]ObjectTemplate `yaml:"objects" json:"objects"`
 	DefaultGroup string                    `yaml:"default_group" json:"default_group"`
+	Session      SessionSettings           `yaml:"session" json:"session"`
 }
 
 type Config struct {
@@ -90,6 +96,10 @@ func LoadConfig(path string) (Config, error) {
 				NtfyURI:       "",
 				EncryptionKey: generateEncryptionKey(),
 				Settings: Settings{
+					Session: SessionSettings{
+						TTLMinutes:  1440,
+						IdleMinutes: 60,
+					},
 					UI: UISettings{
 						Theme: "dark",
 						ContextMenu: []ContextMenuAction{
@@ -130,6 +140,13 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Settings = dbSettings
 	} else {
 		_ = SaveSettingsToDB(cfg.Settings)
+	}
+
+	if cfg.Settings.Session.TTLMinutes == 0 {
+		cfg.Settings.Session.TTLMinutes = 1440
+	}
+	if cfg.Settings.Session.IdleMinutes == 0 {
+		cfg.Settings.Session.IdleMinutes = 60
 	}
 
 	if len(cfg.Settings.UI.ContextMenu) == 0 {

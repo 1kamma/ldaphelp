@@ -199,6 +199,8 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		session, _ := store.Get(r, "ldap-session")
 		session.Values["dn"] = dn
 		session.Values["password"] = password
+		session.Values["created"] = time.Now().Unix()
+		session.Values["last_active"] = time.Now().Unix()
 		session.Save(r, w)
 
 		notify(a.cfg.NtfyURI, "User logged in: "+dn)
@@ -241,7 +243,7 @@ func (a *App) handleApiUserCredential(w http.ResponseWriter, r *http.Request) {
 
 	targetDN := req.User
 	if !strings.Contains(targetDN, "=") {
-		conn, err := getLDAPConn(r, a.cfg)
+		conn, err := getLDAPConn(w, r, a.cfg)
 		if err != nil {
 			http.Error(w, "Failed to connect to LDAP", http.StatusInternalServerError)
 			return
