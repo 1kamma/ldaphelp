@@ -38,8 +38,38 @@ func notify(uri, message string) {
 	}()
 }
 
+func resolvePaths() (configPath, dbPath string) {
+	if _, err := os.Stat("./config.yaml"); err == nil {
+		configPath = "./config.yaml"
+	} else if _, err := os.Stat("/etc/ldaphelp/config.yaml"); err == nil {
+		configPath = "/etc/ldaphelp/config.yaml"
+	} else {
+		if err := os.MkdirAll("/etc/ldaphelp", 0755); err == nil || !os.IsPermission(err) {
+			configPath = "/etc/ldaphelp/config.yaml"
+		} else {
+			configPath = "./config.yaml"
+		}
+	}
+
+	if _, err := os.Stat("./ldaphelp.db"); err == nil {
+		dbPath = "./ldaphelp.db"
+	} else if _, err := os.Stat("/var/lib/ldaphelp/ldaphelp.db"); err == nil {
+		dbPath = "/var/lib/ldaphelp/ldaphelp.db"
+	} else {
+		if err := os.MkdirAll("/var/lib/ldaphelp", 0755); err == nil {
+			dbPath = "/var/lib/ldaphelp/ldaphelp.db"
+		} else {
+			dbPath = "./ldaphelp.db"
+		}
+	}
+
+	return configPath, dbPath
+}
+
 func main() {
-	if err := initDB(); err != nil {
+	configPath, dbPath := resolvePaths()
+
+	if err := initDB(dbPath); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -47,7 +77,7 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	cfg, err := LoadConfig("config.yaml")
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)

@@ -16,9 +16,9 @@ import (
 
 var db *sql.DB
 
-func initDB() error {
+func initDB(dbPath string) error {
 	var err error
-	db, err = sql.Open("sqlite3", "ldaphelp.db")
+	db, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return err
 	}
