@@ -391,7 +391,7 @@ func (a *App) handleApiNextID(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(id))
 }
 func getNextID(conn *ldap.Conn, bases []string, attr string) string {
-	maxID := 10000
+	maxID := 1000
 	for _, base := range bases {
 		if base == "" {
 			continue
@@ -1055,7 +1055,7 @@ const browseHTML = `<!doctype html>
             if (attr.toLowerCase() === 'uidnumber') {
                 row.style.display = 'none';
                 input.type = 'hidden';
-                const nextIdRes = await fetch('/api/next_id?attr=uidnumber');
+                const nextIdRes = await fetch('/api/next_id?attr=uidNumber');
                 if (nextIdRes.ok) {
                     input.value = await nextIdRes.text();
                 }
@@ -1065,7 +1065,7 @@ const browseHTML = `<!doctype html>
                 if (defGid) {
                     input.value = defGid;
                 } else {
-                    const nextIdRes = await fetch('/api/next_id?attr=gidnumber');
+                    const nextIdRes = await fetch('/api/next_id?attr=gidNumber');
                     if (nextIdRes.ok) {
                         input.value = await nextIdRes.text();
                     }
@@ -1090,7 +1090,7 @@ const browseHTML = `<!doctype html>
         if (!objName) return;
 
         const inputs = document.querySelectorAll('.oc-attr-input');
-        const reqData = { dn: currentEntryDN, add: { objectclass: [objName] }, replace: {}, delete: {} };
+        const reqData = { dn: currentEntryDN, add: { objectclass: [objName] }, replace: {}, delete: [] };
 
         let allFilled = true;
         inputs.forEach(input => {
