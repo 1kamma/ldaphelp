@@ -11,14 +11,14 @@ import (
 	"fmt"
 	"io"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
 
-func initDB() error {
+func initDB(dbPath string) error {
 	var err error
-	db, err = sql.Open("sqlite3", "ldaphelp.db")
+	db, err = sql.Open("sqlite", dbPath)
 	if err != nil {
 		return err
 	}
