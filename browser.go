@@ -1522,7 +1522,7 @@ const browseHTML = `<!doctype html>
         const res = await fetch('/api/modify', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ dn: groupDN, add: { [attr]: val } })
+            body: JSON.stringify({ dn: groupDN, add: { [attr]: [val] } })
         });
 
         if (res.ok) {
