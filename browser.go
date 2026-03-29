@@ -648,7 +648,7 @@ const browseHTML = `<!doctype html>
       <h2>Entry Details</h2>
     </div>
     <div style="display:flex; justify-content:space-between; margin-bottom: 15px; align-items:center;">
-      <div id="entry-dn" style="flex:1; font-family: monospace; background: var(--hover); padding: 10px; border-radius: 4px; border: 1px solid var(--border);">Select an entry to view details.</div>
+      <div id="entry-dn" style="flex:1; font-family: monospace; background: var(--hover); padding: 10px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer;" title="Click to copy DN" onclick="copyDN()">Select an entry to view details.</div>
       <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6; margin-left: 10px;" onclick="showAddObjectClass()">Add Object Class</button>
       <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6; margin-left: 10px;" onclick="showAddAttribute()">Add Attribute</button>
       <button id="btn-edit" class="btn" style="display:none; margin-left: 10px;" onclick="toggleEdit()">Edit</button>
@@ -956,6 +956,18 @@ const browseHTML = `<!doctype html>
     let currentEntryDN = '';
     let currentEntryData = {};
     let isEditing = false;
+
+    function copyDN() {
+        const text = document.getElementById('entry-dn').textContent;
+        if (text && text !== "Select an entry to view details.") {
+            navigator.clipboard.writeText(text).then(() => {
+                const el = document.getElementById('entry-dn');
+                const origBg = el.style.background;
+                el.style.background = '#10b981';
+                setTimeout(() => { el.style.background = origBg; }, 250);
+            });
+        }
+    }
 
     async function loadEntry(dn) {
         if (isEditing) toggleEdit();
