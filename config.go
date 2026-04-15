@@ -50,12 +50,21 @@ type SessionSettings struct {
 	IdleMinutes int `yaml:"idle_minutes" json:"idle_minutes"`
 }
 
+type EmbeddedAssetSettings struct {
+	// Mode: store either an embedded key ("embedded:logo"/"embedded:favicon") or a redirect URL (https://...)
+	Logo    string `yaml:"logo" json:"logo"`
+	Favicon string `yaml:"favicon" json:"favicon"`
+}
+
 type Settings struct {
 	SSO          SSOSettings               `yaml:"sso" json:"sso"`
 	UI           UISettings                `yaml:"ui" json:"ui"`
 	Objects      map[string]ObjectTemplate `yaml:"objects" json:"objects"`
 	DefaultGroup string                    `yaml:"default_group" json:"default_group"`
 	Session      SessionSettings           `yaml:"session" json:"session"`
+
+	// New: controls whether logo/favicon are embedded (served from DB) or redirected (external URL)
+	Assets EmbeddedAssetSettings `yaml:"assets" json:"assets"`
 }
 
 type Config struct {
@@ -114,6 +123,10 @@ func LoadConfig(path string) (Config, error) {
 							PinQuickCreate:  true,
 						},
 					},
+					Assets: EmbeddedAssetSettings{
+						Logo:    "",
+						Favicon: "",
+					},
 				},
 				Server: Server{
 					Host: "localhost",
@@ -137,13 +150,88 @@ func LoadConfig(path string) (Config, error) {
 	cfg.Server.Joined = strings.Join([]string{cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)}, ":")
 	dbSettings, errDb := LoadSettingsFromDB()
 	if errDb == nil && (dbSettings.UI.Theme != "" || len(dbSettings.Objects) > 0) {
-		cfg.Settings = dbSettings
+		// Merge settings with precedence:
+		// - YAML wins when it explicitly sets a value (i.e., differs from the zero-value/default)
+		// - DB provides values for fields not set in YAML
+		//
+		// This keeps user-changed settings in DB, while allowing config.yaml to override them
+		// when you intentionally specify a different value in YAML.
+
+		yamlSettings := cfg.Settings
+
+		// Start from DB (baseline), then overlay YAML where YAML is explicitly set.
+		merged := dbSettings
+
+		// ---- UI ----
+		if yamlSettings.UI.Theme != "" {
+			merged.UI.Theme = yamlSettings.UI.Theme
+		}
+		if len(yamlSettings.UI.ContextMenu) > 0 {
+			merged.UI.ContextMenu = yamlSettings.UI.ContextMenu
+		}
+
+		// ---- Objects ----
+		if yamlSettings.Objects != nil && len(yamlSettings.Objects) > 0 {
+			if merged.Objects == nil {
+				merged.Objects = map[string]ObjectTemplate{}
+			}
+			for k, v := range yamlSettings.Objects {
+				merged.Objects[k] = v
+			}
+		}
+
+		// ---- DefaultGroup ----
+		if strings.TrimSpace(yamlSettings.DefaultGroup) != "" {
+			merged.DefaultGroup = yamlSettings.DefaultGroup
+		}
+
+		// ---- Session ----
+		// If YAML specifies non-zero values, it wins.
+		if yamlSettings.Session.TTLMinutes != 0 {
+			merged.Session.TTLMinutes = yamlSettings.Session.TTLMinutes
+		}
+		if yamlSettings.Session.IdleMinutes != 0 {
+			merged.Session.IdleMinutes = yamlSettings.Session.IdleMinutes
+		}
+
+		// ---- SSO ----
+		// YAML overrides DB if enabled or if any relevant field is specified.
+		if yamlSettings.SSO.SAML.Enabled ||
+			strings.TrimSpace(yamlSettings.SSO.SAML.IdPURL) != "" ||
+			strings.TrimSpace(yamlSettings.SSO.SAML.EntityID) != "" ||
+			strings.TrimSpace(yamlSettings.SSO.SAML.Cert) != "" {
+			merged.SSO.SAML = yamlSettings.SSO.SAML
+		}
+		if yamlSettings.SSO.OIDC.Enabled ||
+			strings.TrimSpace(yamlSettings.SSO.OIDC.IssuerURL) != "" ||
+			strings.TrimSpace(yamlSettings.SSO.OIDC.ClientID) != "" ||
+			strings.TrimSpace(yamlSettings.SSO.OIDC.ClientSecret) != "" {
+			merged.SSO.OIDC = yamlSettings.SSO.OIDC
+		}
+
+		// ---- Assets (logo/favicon) ----
+		// YAML wins when it provides a non-empty path/value.
+		if strings.TrimSpace(yamlSettings.Assets.Logo) != "" {
+			merged.Assets.Logo = yamlSettings.Assets.Logo
+		}
+		if strings.TrimSpace(yamlSettings.Assets.Favicon) != "" {
+			merged.Assets.Favicon = yamlSettings.Assets.Favicon
+		}
+
+		cfg.Settings = merged
 	} else {
 		_ = SaveSettingsToDB(cfg.Settings)
 	}
 
 	if cfg.Settings.Session.TTLMinutes == 0 {
 		cfg.Settings.Session.TTLMinutes = 1440
+		// Initialize new asset settings if not explicitly set by DB
+		if cfg.Settings.Assets.Logo == "" {
+			cfg.Settings.Assets.Logo = ""
+		}
+		if cfg.Settings.Assets.Favicon == "" {
+			cfg.Settings.Assets.Favicon = ""
+		}
 	}
 	if cfg.Settings.Session.IdleMinutes == 0 {
 		cfg.Settings.Session.IdleMinutes = 60

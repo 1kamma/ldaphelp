@@ -1,0 +1,35 @@
+ldap_server: "ldaps://example.com"
+base: "dc=example,dc=com"
+attribute: "uid"
+ntfy_uri: "https://ntfy.sh/ldapexample"
+encryption_key: "ENKYPTIONKEY"
+server:
+    host: localhost
+    port: 8080
+settings:
+    ui:
+        theme: dark
+        context_menu:
+            - name: Action 1
+              action: alert('Action 1')
+            - name: Action 2
+              action: alert('Action 2')
+        favicon: icon.png
+        logo: icon.png
+    objects:
+        inetOrgPerson:
+            default_location: "ou=users,dc=example,dc=com"
+            dn_parameter: cn
+            pin_quick_create: true
+        posixAccount:
+            default_location: "ou=users,dc=example,dc=com"
+            dn_parameter: cn
+            pin_quick_create: true
+        groupOfNames:
+            default_location: "ou=groups,dc=example,dc=com"
+            dn_parameter: cn
+            pin_quick_create: true
+        posixGroup:
+            default_location: "ou=groups,dc=example,dc=com"
+            dn_parameter: cn
+            pin_quick_create: true

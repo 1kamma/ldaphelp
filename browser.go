@@ -122,10 +122,40 @@ func (a *App) handleBrowse(w http.ResponseWriter, r *http.Request) {
 
 	settingsJSON, _ := json.Marshal(a.cfg.Settings)
 
+	// Resolve AssetURL for templates (favicon/logo).
+	// - values come from settings.assets.* (path/URL) or from embedded:* (served from SQLite)
+	resolveAsset := func(settingValue string, embeddedName string, embeddedPath string) string {
+		v := strings.TrimSpace(settingValue)
+		if v == "" {
+			return ""
+		}
+		if strings.HasPrefix(v, "embedded:") {
+			if bin, _ := GetEmbeddedAssetBinary(embeddedName); bin != nil {
+				return embeddedPath
+			}
+			if b64, _ := GetEmbeddedAssetBase64(embeddedName); b64 != "" {
+				return embeddedPath
+			}
+			return ""
+		}
+		return v
+	}
+
+	assetURL := struct {
+		Logo    string
+		Favicon string
+	}{
+		Logo: resolveAsset(a.cfg.Settings.Assets.Logo, "logo", "assets/embedded/logo"),
+		// Use SVG as favicon if configured; browsers that support it will render it fine.
+		Favicon: resolveAsset(a.cfg.Settings.Assets.Favicon, "icon", "assets/embedded/icon"),
+	}
+
 	data := struct {
 		SettingsJSON template.JS
+		AssetURL     any
 	}{
 		SettingsJSON: template.JS(settingsJSON),
+		AssetURL:     assetURL,
 	}
 
 	if err := tmpl.Execute(w, data); err != nil {
@@ -517,7 +547,6 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 			req.Attributes["gidNumber"] = []string{getNextID(conn, bases, "gidNumber")}
 		}
 	}
-
 	addReq := ldap.NewAddRequest(req.DN, nil)
 	for k, vals := range req.Attributes {
 		var validVals []string
@@ -546,9 +575,25 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := conn.Add(addReq); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// Special case: groupOfNames often requires a member attribute at create-time.
+	// We create the entry as requested, then normalize membership in createAGroupOfNames().
+	isGroupOfNames := false
+	for _, oc := range req.Attributes["objectClass"] {
+		if strings.EqualFold(oc, "groupOfNames") {
+			isGroupOfNames = true
+		}
+	}
+
+	if isGroupOfNames {
+		if err := createAGroupOfNames(conn, req.DN, addReq); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := conn.Add(addReq); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	session, _ := store.Get(r, "ldap-session")
@@ -556,6 +601,44 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 	notify(a.cfg.NtfyURI, fmt.Sprintf("User %s created LDAP object: %s", userDN, req.DN))
 
 	w.WriteHeader(http.StatusOK)
+}
+func createAGroupOfNames(conn *ldap.Conn, dn string, request *ldap.AddRequest) error {
+	// 1) Create the group entry
+	if err := conn.Add(request); err != nil {
+		return err
+	}
+
+	// 2) Collect any placeholder "member" values from the ADD request
+	var placeholders []string
+	for _, a := range request.Attributes {
+		if strings.EqualFold(a.Type, "member") {
+			placeholders = append(placeholders, a.Vals...)
+			break
+		}
+	}
+
+	// 3) Modify: delete placeholders, then add self DN
+	modReq := ldap.NewModifyRequest(dn, nil)
+
+	if len(placeholders) > 0 {
+		modReq.Changes = append(modReq.Changes, ldap.Change{
+			Operation: ldap.DeleteAttribute,
+			Modification: ldap.PartialAttribute{
+				Type: "member",
+				Vals: placeholders,
+			},
+		})
+	}
+
+	modReq.Changes = append(modReq.Changes, ldap.Change{
+		Operation: ldap.AddAttribute,
+		Modification: ldap.PartialAttribute{
+			Type: "member",
+			Vals: []string{dn},
+		},
+	})
+
+	return conn.Modify(modReq)
 }
 
 func (a *App) handleApiPassword(w http.ResponseWriter, r *http.Request) {
@@ -639,6 +722,7 @@ const browseHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <title>LDAP Browser</title>
+  <link rel="icon" href="{{.AssetURL.Favicon}}">
   <style>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
@@ -728,8 +812,8 @@ const browseHTML = `<!doctype html>
 
   <div id="group-select-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
     <div class="modal-content" style="max-height: 80vh; overflow-y: auto;">
-      <h3 id="group-select-title">Select Group</h3>
-      <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; max-height: 300px; overflow-y: auto;"></div>
+      <h3 id="group-select-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Select Group</h3>
+      <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; max-height: 300px; overflow-y: hidden;"></div>
       <div class="modal-actions">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('group-select-modal').style.display='none'">Cancel</button>
       </div>
@@ -946,7 +1030,10 @@ const browseHTML = `<!doctype html>
                 addAction('Add to groupOfNames', () => showGroupSelector('groupOfNames', nodeData.dn));
             }
             if (ocs.includes('posixgroup')) {
-                addAction('Add members', () => showMemberSelector(nodeData.dn));
+                addAction('Add members', () => showMemberSelector('posixGroup', nodeData.dn));
+            }
+            if (ocs.includes('groupofnames')) {
+                addAction('Add members', () => showMemberSelector('groupOfNames', nodeData.dn));
             }
 
             cm.style.display = 'block';
@@ -1587,7 +1674,7 @@ const browseHTML = `<!doctype html>
         }
     }
 
-    async function showMemberSelector(groupDN) {
+    async function showMemberSelector(type, groupDN) {
         document.getElementById('group-select-title').textContent = "Add members to " + groupDN;
         const listDiv = document.getElementById('group-select-list');
         listDiv.innerHTML = 'Loading...';
@@ -1595,14 +1682,32 @@ const browseHTML = `<!doctype html>
 
         const gRes = await fetch('/api/entry?dn=' + encodeURIComponent(groupDN));
         const gData = await gRes.json();
-        const members = gData['memberUid'] || [];
 
+        // Build "eligible users" filter depending on group type
+        let members = [];
         let filter = '';
-        if (members.length > 0) {
-            const exclusion = members.map(m => '(!(uid=' + m + '))').join('');
-            filter = '(&(objectClass=posixAccount)' + exclusion + ')';
+
+        if (type === 'posixGroup') {
+            members = gData['memberUid'] || [];
+            if (members.length > 0) {
+                const exclusion = members.map(m => '(!(uid=' + m + '))').join('');
+                filter = '(&(objectClass=posixAccount)' + exclusion + ')';
+            } else {
+                filter = '(objectClass=posixAccount)';
+            }
+        } else if (type === 'groupOfNames') {
+            members = gData['member'] || [];
+            if (members.length > 0) {
+                const exclusion = members.map(dn => '(!(distinguishedName=' + dn + '))').join('');
+                // We keep this broad: any "person-ish" entries are candidates
+                filter = '(|(objectClass=inetOrgPerson)(objectClass=person)(objectClass=posixAccount))' + exclusion;
+                filter = '(&' + filter + ')';
+            } else {
+                filter = '(|(objectClass=inetOrgPerson)(objectClass=person)(objectClass=posixAccount))';
+            }
         } else {
-            filter = '(objectClass=posixAccount)';
+            listDiv.innerHTML = 'Unsupported group type';
+            return;
         }
 
         const res = await fetch('/api/search?filter=' + encodeURIComponent(filter));
@@ -1610,43 +1715,108 @@ const browseHTML = `<!doctype html>
             listDiv.innerHTML = 'Search failed';
             return;
         }
-        const users = await res.json() || [];
+        let users = await res.json() || [];
         if (users.length === 0) {
             listDiv.innerHTML = 'No eligible users found.';
             return;
         }
 
+        // Keep filter input fixed by rendering it outside the scrollable results container.
         listDiv.innerHTML = '';
-        users.forEach(u => {
-            const div = document.createElement('div');
-            div.style.padding = "8px";
-            div.style.borderBottom = "1px solid var(--border)";
-            div.style.cursor = "pointer";
-            div.title = u;
-            div.textContent = u.split(',')[0];
-            div.onclick = () => addMemberToGroup(groupDN, u);
-            listDiv.appendChild(div);
-        });
+
+        const filterWrap = document.createElement('div');
+        filterWrap.style.padding = "8px";
+        filterWrap.style.borderBottom = "1px solid var(--border)";
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Filter users...';
+        input.style.width = '100%';
+        input.style.padding = '6px';
+        input.style.boxSizing = 'border-box';
+        input.style.background = 'var(--bg)';
+        input.style.color = 'var(--text)';
+        input.style.border = '1px solid var(--border)';
+        filterWrap.appendChild(input);
+
+        // Layout note:
+        // We avoid any custom scrollbar styling so native desktop scrollbars (including arrows
+        // where the OS/browser provides them) remain visible and are not suppressed.
+        // Make the results pane responsive to screen size and let it scroll natively.
+        listDiv.style.display = 'flex';
+        listDiv.style.flexDirection = 'column';
+        listDiv.style.maxHeight = 'min(70vh, 520px)';
+
+        filterWrap.style.flex = '0 0 auto';
+
+        const resultsDiv = document.createElement('div');
+        resultsDiv.style.flex = '1 1 auto';
+        resultsDiv.style.minHeight = '0';
+        resultsDiv.style.overflowY = 'auto';
+
+        listDiv.appendChild(filterWrap);
+        listDiv.appendChild(resultsDiv);
+
+        const render = (needle) => {
+            resultsDiv.innerHTML = '';
+
+            const q = (needle || '').toLowerCase().trim();
+            const filtered = q ? users.filter(u => u.toLowerCase().includes(q)) : users;
+
+            if (filtered.length === 0) {
+                const empty = document.createElement('div');
+                empty.style.padding = "8px";
+                empty.textContent = 'No matches.';
+                resultsDiv.appendChild(empty);
+                return;
+            }
+
+            filtered.forEach(u => {
+                const div = document.createElement('div');
+                div.style.padding = "8px";
+                div.style.borderBottom = "1px solid var(--border)";
+                div.style.cursor = "pointer";
+                div.title = u;
+                div.textContent = u.split(',')[0];
+                div.onclick = () => addMemberToGroup(type, groupDN, u);
+                resultsDiv.appendChild(div);
+            });
+        };
+
+        input.oninput = () => render(input.value);
+        render('');
     }
 
-    async function addMemberToGroup(groupDN, userDN) {
-        const uRes = await fetch('/api/entry?dn=' + encodeURIComponent(userDN));
-        const uData = await uRes.json();
-        const uid = (uData['uid'] && uData['uid'][0]) || '';
+    async function addMemberToGroup(type, groupDN, userDN) {
+        let attr = '';
+        let val = '';
 
-        if (!uid) return;
+        if (type === 'posixGroup') {
+            const uRes = await fetch('/api/entry?dn=' + encodeURIComponent(userDN));
+            const uData = await uRes.json();
+            val = (uData['uid'] && uData['uid'][0]) || '';
+            attr = 'memberUid';
+        } else if (type === 'groupOfNames') {
+            attr = 'member';
+            val = userDN;
+        } else {
+            return;
+        }
+
+        if (!val) return;
 
         const res = await fetch('/api/modify', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ dn: groupDN, add: { memberUid: uid } })
+            body: JSON.stringify({ dn: groupDN, add: { [attr]: [val] } })
         });
 
         if (res.ok) {
             alert('Added successfully!');
             document.getElementById('group-select-modal').style.display='none';
         } else {
-            alert('Failed to add member');
+            const errText = await res.text();
+            alert('Failed to add member: ' + errText);
         }
     }
 
