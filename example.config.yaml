@@ -14,8 +14,19 @@ settings:
               action: alert('Action 1')
             - name: Action 2
               action: alert('Action 2')
-        favicon: icon.png
-        logo: icon.png
+    assets:
+        # Runtime values:
+        # - Use "embedded:logo" / "embedded:icon" to serve from SQLite (embeded_data).
+        # - Or set a direct URL/path (e.g. "https://..." or "/assets/whatever.svg").
+        #
+        # Bootstrapping values (filesystem sources):
+        # - Paths are treated as relative-first against source_base_dir.
+        # - If the relative-resolved file doesn't exist/read, the literal path is tried.
+        source_base_dir: /etc/ldaphelp/branding
+        logo_source_file: logo.png
+        favicon_source_file: favicon.svg
+        logo: embedded:logo
+        favicon: embedded:icon
     objects:
         inetOrgPerson:
             default_location: "ou=users,dc=example,dc=com"

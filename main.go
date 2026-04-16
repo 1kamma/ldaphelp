@@ -18,10 +18,12 @@ import (
 
 // handleUploadAsset accepts multipart/form-data uploads to store "icon" and "logo" in SQLite.
 // Fields:
-// - name: "icon" or "logo"
-// - mode: "embedded" (store in DB and set settings to embedded:*), or "redirect" (set settings to provided redirect_url)
-// - file: the uploaded file (required for embedded mode)
-// - redirect_url: required for redirect mode
+//   - name: "icon" or "logo"
+//   - mode: "embedded" (store in DB and set settings to embedded:*), or "redirect" (set settings to provided redirect_url)
+//   - file: the uploaded file (optional for embedded mode if source_file is provided)
+//   - source_file: filesystem path. If relative, it will be resolved against settings.assets.source_base_dir (if set).
+//     If provided in embedded mode, the server reads this path and embeds it into SQLite.
+//   - redirect_url: required for redirect mode
 func (a *App) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -43,6 +45,53 @@ func (a *App) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(r.FormValue("name"))
 	mode := strings.TrimSpace(r.FormValue("mode"))
+	sourceFile := strings.TrimSpace(r.FormValue("source_file"))
+
+	// Resolve relative source_file paths against settings.assets.source_base_dir (if configured).
+	resolveSourcePath := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return ""
+		}
+
+		// Relative-first resolution:
+		// 1) If SourceBaseDir is set, try "base/p" first (even if p is absolute-looking config intent).
+		// 2) If that file does not exist, fall back to p as provided.
+		base := strings.TrimSpace(a.cfg.Settings.Assets.SourceBaseDir)
+		if base != "" {
+			// If p is absolute, we also try base + "/" + basename(p) as a convenience.
+			candidate := ""
+			if strings.HasPrefix(p, "/") {
+				// Extract basename without path/filepath to keep deps minimal
+				bn := p
+				if idx := strings.LastIndex(bn, "/"); idx != -1 {
+					bn = bn[idx+1:]
+				}
+				if bn != "" {
+					if strings.HasSuffix(base, "/") {
+						candidate = base + bn
+					} else {
+						candidate = base + "/" + bn
+					}
+				}
+			} else {
+				if strings.HasSuffix(base, "/") {
+					candidate = base + p
+				} else {
+					candidate = base + "/" + p
+				}
+			}
+
+			if candidate != "" {
+				if st, err := os.Stat(candidate); err == nil && st != nil && !st.IsDir() {
+					return candidate
+				}
+			}
+		}
+
+		// Fall back to the provided path.
+		return p
+	}
 
 	if name != "icon" && name != "logo" {
 		http.Error(w, "invalid name (must be 'icon' or 'logo')", http.StatusBadRequest)
@@ -73,21 +122,40 @@ func (a *App) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "embedded":
-		f, _, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, "file is required for embedded mode: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		defer f.Close()
+		var b []byte
 
-		b, err := io.ReadAll(f)
-		if err != nil {
-			http.Error(w, "failed to read upload: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if len(b) == 0 {
-			http.Error(w, "empty upload", http.StatusBadRequest)
-			return
+		// If source_file is provided, read from filesystem (admin-driven embedding).
+		// Otherwise, fall back to multipart upload.
+		if sourceFile != "" {
+			resolved := resolveSourcePath(sourceFile)
+			data, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				http.Error(w, "failed to read source_file: "+readErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(data) == 0 {
+				http.Error(w, "source_file is empty", http.StatusBadRequest)
+				return
+			}
+			b = data
+		} else {
+			f, _, err := r.FormFile("file")
+			if err != nil {
+				http.Error(w, "file is required for embedded mode unless source_file is provided: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			defer f.Close()
+
+			data, err := io.ReadAll(f)
+			if err != nil {
+				http.Error(w, "failed to read upload: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(data) == 0 {
+				http.Error(w, "empty upload", http.StatusBadRequest)
+				return
+			}
+			b = data
 		}
 
 		if err := SaveUploadedAsset(name, b); err != nil {
@@ -225,6 +293,118 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Startup bootstrap (config-driven filesystem sources):
+	// If settings.assets.* specifies filesystem source paths, embed them into SQLite (embeded_data),
+	// then switch runtime settings to embedded:* pointers and persist.
+	//
+	// Expected settings fields:
+	// - settings.assets.logo_source_file:   e.g. "/etc/ldaphelp/branding/logo.png"
+	// - settings.assets.favicon_source_file: e.g. "/etc/ldaphelp/branding/favicon.svg"
+	//
+	// After successful import:
+	// - settings.assets.logo   -> "embedded:logo"
+	// - settings.assets.favicon -> "embedded:icon"
+	//
+	// This avoids hardcoding asset directories/filenames in code and makes YAML the source of truth.
+	changed := false
+
+	readAndEmbed := func(itemName string, srcPath string) bool {
+		srcPath = strings.TrimSpace(srcPath)
+		if srcPath == "" {
+			return false
+		}
+
+		// Relative-first resolution:
+		// - If SourceBaseDir is set, try base + "/" + srcPath first (when srcPath is relative),
+		//   or base + "/" + basename(srcPath) first (when srcPath is absolute).
+		// - If that doesn't exist, fall back to srcPath as provided.
+		resolved := srcPath
+		base := strings.TrimSpace(cfg.Settings.Assets.SourceBaseDir)
+
+		tryCandidate := func(candidate string) (string, bool) {
+			if candidate == "" {
+				return "", false
+			}
+			if st, err := os.Stat(candidate); err == nil && st != nil && !st.IsDir() {
+				return candidate, true
+			}
+			return "", false
+		}
+
+		if base != "" {
+			candidate := ""
+			if strings.HasPrefix(srcPath, "/") {
+				bn := srcPath
+				if idx := strings.LastIndex(bn, "/"); idx != -1 {
+					bn = bn[idx+1:]
+				}
+				if bn != "" {
+					if strings.HasSuffix(base, "/") {
+						candidate = base + bn
+					} else {
+						candidate = base + "/" + bn
+					}
+				}
+			} else {
+				if strings.HasSuffix(base, "/") {
+					candidate = base + srcPath
+				} else {
+					candidate = base + "/" + srcPath
+				}
+			}
+
+			if c, ok := tryCandidate(candidate); ok {
+				resolved = c
+			}
+		}
+
+		// If the base-dir candidate didn't exist, and the provided path does, use the provided path.
+		// Otherwise, we'll attempt to read and let it error with a clear message.
+		b, err := os.ReadFile(resolved)
+		if err != nil {
+			// As a fallback, if we tried a base-dir candidate and it failed, try the original path.
+			if resolved != srcPath {
+				if b2, err2 := os.ReadFile(srcPath); err2 == nil {
+					b = b2
+					resolved = srcPath
+					err = nil
+				}
+			}
+		}
+		if err != nil {
+			slog.Warn("failed to read asset source file", "item", itemName, "path", resolved, "error", err)
+			return false
+		}
+		if len(b) == 0 {
+			slog.Warn("asset source file is empty", "item", itemName, "path", resolved)
+			return false
+		}
+		if err := SaveUploadedAsset(itemName, b); err != nil {
+			slog.Warn("failed to save embedded asset into sqlite", "item", itemName, "path", resolved, "error", err)
+			return false
+		}
+		slog.Info("bootstrapped asset into sqlite embeded_data", "item", itemName, "path", resolved, "bytes", len(b))
+		return true
+	}
+
+	// Logo
+	if readAndEmbed("logo", cfg.Settings.Assets.LogoSourceFile) {
+		cfg.Settings.Assets.Logo = "embedded:logo"
+		changed = true
+	}
+
+	// Favicon (stored under item_name="icon" in embeded_data)
+	if readAndEmbed("icon", cfg.Settings.Assets.FaviconSourceFile) {
+		cfg.Settings.Assets.Favicon = "embedded:icon"
+		changed = true
+	}
+
+	if changed {
+		if err := SaveSettingsToDB(cfg.Settings); err != nil {
+			slog.Warn("failed to persist bootstrapped settings to db", "error", err)
+		}
+	}
+
 	app := &App{cfg: cfg}
 
 	mux := http.NewServeMux()
@@ -241,6 +421,8 @@ func main() {
 
 	// Browser API routes
 	mux.HandleFunc("/browse", app.handleBrowse)
+
+	// --- Internal API (used by the UI) ---
 	mux.HandleFunc("/api/roots", app.handleApiRoots)
 
 	// Embedded assets (served from SQLite) + upload endpoint
@@ -264,6 +446,33 @@ func main() {
 	mux.HandleFunc("/api/user_credential", app.handleApiUserCredential)
 	// mux.HandleFunc("/api/rebind", app.handleApiRebind)
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			app.handleApiSettingsPost(w, r)
+		} else {
+			app.handleApiSettingsGet(w, r)
+		}
+	})
+
+	// --- Public API alias (for external API consumers) ---
+	// This mirrors the internal /api/* endpoints without breaking the UI.
+	const publicAPIPrefix = "/public-api"
+	mux.HandleFunc(publicAPIPrefix+"/roots", app.handleApiRoots)
+	mux.HandleFunc(publicAPIPrefix+"/assets/upload", app.handleUploadAsset)
+	mux.HandleFunc(publicAPIPrefix+"/children", app.handleApiChildren)
+	mux.HandleFunc(publicAPIPrefix+"/entry", app.handleApiEntry)
+	mux.HandleFunc(publicAPIPrefix+"/schema", app.handleApiSchema)
+	mux.HandleFunc(publicAPIPrefix+"/schema_manager", app.handleApiSchemaManagerList)
+	mux.HandleFunc(publicAPIPrefix+"/schema_modify", app.handleApiSchemaManagerModify)
+	mux.HandleFunc(publicAPIPrefix+"/modify", app.handleApiModify)
+	mux.HandleFunc(publicAPIPrefix+"/password", app.handleApiPassword)
+	mux.HandleFunc(publicAPIPrefix+"/search", app.handleApiSearch)
+	mux.HandleFunc(publicAPIPrefix+"/delete", app.handleApiDelete)
+	mux.HandleFunc(publicAPIPrefix+"/move", app.handleApiMove)
+	mux.HandleFunc(publicAPIPrefix+"/create", app.handleApiCreate)
+	mux.HandleFunc(publicAPIPrefix+"/next_id", app.handleApiNextID)
+	mux.HandleFunc(publicAPIPrefix+"/default_gid", app.handleApiDefaultGid)
+	mux.HandleFunc(publicAPIPrefix+"/user_credential", app.handleApiUserCredential)
+	mux.HandleFunc(publicAPIPrefix+"/settings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			app.handleApiSettingsPost(w, r)
 		} else {

@@ -51,9 +51,36 @@ type SessionSettings struct {
 }
 
 type EmbeddedAssetSettings struct {
-	// Mode: store either an embedded key ("embedded:logo"/"embedded:favicon") or a redirect URL (https://...)
+	// Runtime values:
+	// - If set to "embedded:logo" / "embedded:icon", the server will serve the bytes from SQLite `embeded_data`.
+	// - Otherwise, treat as a direct URL/path (e.g. "https://..." or "/some/prefix/assets/logo.png").
 	Logo    string `yaml:"logo" json:"logo"`
 	Favicon string `yaml:"favicon" json:"favicon"`
+
+	// Source files (filesystem paths) for startup bootstrapping into SQLite:
+	// If these are set, the server should load the file bytes at startup, store them into SQLite
+	// (`embeded_data`), and then flip the runtime values above to "embedded:logo"/"embedded:icon".
+	//
+	// Relative-first source path resolution (for *_source_file):
+	// - Prefer treating configured source paths as RELATIVE first:
+	//   - If SourceBaseDir is set, try SourceBaseDir + "/" + source_file.
+	//   - If SourceBaseDir is empty, try the source_file as-is (relative to the server working directory).
+	// - If that resolved file does not exist / can't be read, fall back to treating the configured value as a literal path
+	//   (i.e., use it as-is as a full/absolute path).
+	//
+	// In other words: relative-first (against SourceBaseDir), then fall back to the literal path.
+	//
+	// Examples:
+	//  source_base_dir: /etc/ldaphelp/branding
+	//  logo_source_file: logo.png
+	//  favicon_source_file: favicon.svg
+	SourceBaseDir string `yaml:"source_base_dir" json:"source_base_dir"`
+
+	// Examples (literal paths):
+	//  logo_source_file: /etc/ldaphelp/branding/logo.png
+	//  favicon_source_file: /etc/ldaphelp/branding/favicon.svg
+	LogoSourceFile    string `yaml:"logo_source_file" json:"logo_source_file"`
+	FaviconSourceFile string `yaml:"favicon_source_file" json:"favicon_source_file"`
 }
 
 type Settings struct {
@@ -222,6 +249,11 @@ func LoadConfig(path string) (Config, error) {
 	} else {
 		_ = SaveSettingsToDB(cfg.Settings)
 	}
+
+	// Note:
+	// Embedding configured /assets/* branding files into SQLite is performed during startup in main,
+	// after initDB() has run, because the embedding step needs access to both the DB handle and the
+	// embedded assets filesystem.
 
 	if cfg.Settings.Session.TTLMinutes == 0 {
 		cfg.Settings.Session.TTLMinutes = 1440

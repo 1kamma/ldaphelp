@@ -835,6 +835,39 @@ const browseHTML = `<!doctype html>
 
       <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
 
+      <h3>Branding</h3>
+
+      <h4>Direct URL/path (runtime)</h4>
+      <input type="text" id="settings-logo-url" class="input-field" placeholder="Logo URL/path (or embedded:logo)" style="width: 100%; margin-top: 5px;" />
+      <input type="text" id="settings-favicon-url" class="input-field" placeholder="Favicon URL/path (or embedded:icon)" style="width: 100%; margin-top: 5px;" />
+
+      <h4 style="margin-top: 15px;">Embed (upload from browser)</h4>
+      <div style="display:flex; gap:10px; align-items:center; margin-top: 5px; flex-wrap: wrap;">
+        <input type="file" id="settings-logo-file" class="input-field" style="flex:1 1 280px;" />
+        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromUpload('logo', 'settings-logo-file')">Upload & Embed Logo</button>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; margin-top: 10px; flex-wrap: wrap;">
+        <input type="file" id="settings-favicon-file" class="input-field" style="flex:1 1 280px;" />
+        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromUpload('icon', 'settings-favicon-file')">Upload & Embed Favicon</button>
+      </div>
+
+      <h4 style="margin-top: 15px;">Embed from server filesystem (source file)</h4>
+      <div style="display:flex; gap:10px; align-items:center; margin-top: 5px; flex-wrap: wrap;">
+        <input type="text" id="settings-logo-source-file" class="input-field" placeholder="/etc/ldaphelp/branding/logo.png (or relative path if server supports it)" style="flex:1 1 280px;" />
+        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromSourceFile('logo', 'settings-logo-source-file')">Embed Logo</button>
+      </div>
+
+      <div style="display:flex; gap:10px; align-items:center; margin-top: 10px; flex-wrap: wrap;">
+        <input type="text" id="settings-favicon-source-file" class="input-field" placeholder="/etc/ldaphelp/branding/favicon.svg (or relative path if server supports it)" style="flex:1 1 280px;" />
+        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromSourceFile('icon', 'settings-favicon-source-file')">Embed Favicon</button>
+      </div>
+
+      <div style="margin-top: 10px; color: var(--text); opacity: 0.85; font-size: 12px; line-height: 1.4;">
+        Tip: After embedding, set the runtime fields above to <code>embedded:logo</code> and <code>embedded:icon</code> (or just reload — your server may switch them automatically).
+      </div>
+
+      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
+
       <h3>Session Settings</h3>
       <label>TTL (minutes): <input type="number" id="settings-session-ttl" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label><br>
       <label style="margin-top: 10px; display: inline-block;">Idle (minutes): <input type="number" id="settings-session-idle" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label>
@@ -1433,6 +1466,11 @@ const browseHTML = `<!doctype html>
             document.getElementById('settings-session-ttl').value = data.session?.ttl_minutes || 1440;
             document.getElementById('settings-session-idle').value = data.session?.idle_minutes || 60;
 
+            document.getElementById('settings-logo-url').value = data.assets?.logo || '';
+            document.getElementById('settings-favicon-url').value = data.assets?.favicon || '';
+            document.getElementById('settings-logo-source-file').value = data.assets?.logo_source_file || '';
+            document.getElementById('settings-favicon-source-file').value = data.assets?.favicon_source_file || '';
+
             document.getElementById('saml-enabled').checked = data.sso?.saml?.enabled || false;
             document.getElementById('saml-idp').value = data.sso?.saml?.idp_url || '';
             document.getElementById('saml-entity').value = data.sso?.saml?.entity_id || '';
@@ -1458,6 +1496,12 @@ const browseHTML = `<!doctype html>
                 ui: ui,
                 objects: objects,
                 default_group: document.getElementById('settings-default-group').value,
+                assets: {
+                    logo: document.getElementById('settings-logo-url').value,
+                    favicon: document.getElementById('settings-favicon-url').value,
+                    logo_source_file: document.getElementById('settings-logo-source-file').value,
+                    favicon_source_file: document.getElementById('settings-favicon-source-file').value
+                },
                 session: {
                     ttl_minutes: parseInt(document.getElementById('settings-session-ttl').value, 10) || 1440,
                     idle_minutes: parseInt(document.getElementById('settings-session-idle').value, 10) || 60
@@ -1490,6 +1534,59 @@ const browseHTML = `<!doctype html>
             }
         } catch (e) {
             alert('Invalid JSON format for Theme/Context Menu or Objects');
+        }
+    }
+
+    async function embedAssetFromSourceFile(name, inputId) {
+        const src = (document.getElementById(inputId).value || '').trim();
+        if (!src) {
+            alert('Source file path is empty');
+            return;
+        }
+
+        const form = new FormData();
+        form.append('name', name); // "logo" or "icon"
+        form.append('mode', 'embedded');
+        form.append('source_file', src);
+
+        const res = await fetch('/api/assets/upload', {
+            method: 'POST',
+            body: form
+        });
+
+        if (res.ok) {
+            alert('Embedded successfully. Reloading...');
+            location.reload();
+        } else {
+            const err = await res.text();
+            alert('Embed failed: ' + err);
+        }
+    }
+
+    async function embedAssetFromUpload(name, fileInputId) {
+        const inp = document.getElementById(fileInputId);
+        const f = inp && inp.files && inp.files[0];
+        if (!f) {
+            alert('No file selected');
+            return;
+        }
+
+        const form = new FormData();
+        form.append('name', name); // "logo" or "icon"
+        form.append('mode', 'embedded');
+        form.append('file', f, f.name);
+
+        const res = await fetch('/api/assets/upload', {
+            method: 'POST',
+            body: form
+        });
+
+        if (res.ok) {
+            alert('Uploaded & embedded successfully. Reloading...');
+            location.reload();
+        } else {
+            const err = await res.text();
+            alert('Upload/embed failed: ' + err);
         }
     }
 
