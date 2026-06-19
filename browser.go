@@ -1090,7 +1090,7 @@ const browseHTML = `<!doctype html>
                     if (res.ok) {
                         const children = await res.json();
                         if (children && children.length > 0) {
-                            children.forEach(c => childrenUl.appendChild(createNode(c)));
+                            children.sort((a, b) => a.rdn.localeCompare(b.rdn)).forEach(c => childrenUl.appendChild(createNode(c)));
                             expander.textContent = '▼';
                         } else {
                             expander.textContent = ' ';

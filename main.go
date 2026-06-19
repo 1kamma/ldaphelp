@@ -464,6 +464,7 @@ func main() {
 	mux.HandleFunc(publicAPIPrefix+"/schema_manager", app.handleApiSchemaManagerList)
 	mux.HandleFunc(publicAPIPrefix+"/schema_modify", app.handleApiSchemaManagerModify)
 	mux.HandleFunc(publicAPIPrefix+"/modify", app.handleApiModify)
+	mux.HandleFunc(publicAPIPrefix+"/update-fields", app.handlePublicAPIUpdateFields)
 	mux.HandleFunc(publicAPIPrefix+"/password", app.handleApiPassword)
 	mux.HandleFunc(publicAPIPrefix+"/search", app.handleApiSearch)
 	mux.HandleFunc(publicAPIPrefix+"/delete", app.handleApiDelete)

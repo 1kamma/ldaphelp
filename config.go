@@ -94,14 +94,24 @@ type Settings struct {
 	Assets EmbeddedAssetSettings `yaml:"assets" json:"assets"`
 }
 
+type ExternalAPISettings struct {
+	Enabled           bool     `yaml:"enabled"`
+	Key               string   `yaml:"key"`
+	Secret            string   `yaml:"secret"`
+	AllowedAttributes []string `yaml:"allowed_attributes"`
+	BindDN            string   `yaml:"bind_dn"`
+	BindPassword      string   `yaml:"bind_password"`
+}
+
 type Config struct {
-	LDAPServer    string   `yaml:"ldap_server"`
-	Base          string   `yaml:"base"`
-	Attribute     string   `yaml:"attribute"`
-	NtfyURI       string   `yaml:"ntfy_uri"`
-	EncryptionKey string   `yaml:"encryption_key"`
-	Settings      Settings `yaml:"settings"`
-	Server        Server   `yaml:"server"`
+	LDAPServer    string              `yaml:"ldap_server"`
+	Base          string              `yaml:"base"`
+	Attribute     string              `yaml:"attribute"`
+	NtfyURI       string              `yaml:"ntfy_uri"`
+	EncryptionKey string              `yaml:"encryption_key"`
+	Settings      Settings            `yaml:"settings"`
+	ExternalAPI   ExternalAPISettings `yaml:"external_api"`
+	Server        Server              `yaml:"server"`
 }
 
 type Server struct {

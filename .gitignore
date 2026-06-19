@@ -3,3 +3,5 @@ ldaphelp
 ldaphelp.db
 tmphelpers/
 assets/
+__*
+*.log
