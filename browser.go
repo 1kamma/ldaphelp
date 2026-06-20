@@ -151,11 +151,13 @@ func (a *App) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		SettingsJSON template.JS
-		AssetURL     any
+		SettingsJSON   template.JS
+		AssetURL       any
+		ServerTimeZone string
 	}{
-		SettingsJSON: template.JS(settingsJSON),
-		AssetURL:     assetURL,
+		SettingsJSON:   template.JS(settingsJSON),
+		AssetURL:       assetURL,
+		ServerTimeZone: time.Now().Location().String(),
 	}
 
 	if err := tmpl.Execute(w, data); err != nil {
@@ -917,6 +919,7 @@ const browseHTML = `<!doctype html>
 
   <script>
     const settings = {{.SettingsJSON}};
+    const serverTimeZone = {{printf "%q" .ServerTimeZone}};
 
     if (settings && settings.ui && settings.ui.theme === "light") {
         document.body.classList.add("light");
@@ -1124,6 +1127,94 @@ const browseHTML = `<!doctype html>
     let currentEntryData = {};
     let isEditing = false;
 
+    function parseLDAPGeneralizedTime(value) {
+        if (typeof value !== 'string') return null;
+        const match = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d+))?(Z|[+-]\d{4})$/);
+        if (!match) return null;
+
+        const [, year, month, day, hour, minute, second, fraction, tz] = match;
+        let millis = 0;
+        if (fraction) {
+            millis = Math.round(Number('0.' + fraction) * 1000);
+        }
+
+        let timestamp = Date.UTC(
+            Number(year),
+            Number(month) - 1,
+            Number(day),
+            Number(hour),
+            Number(minute),
+            Number(second),
+            millis,
+        );
+
+        if (tz !== 'Z') {
+            const sign = tz[0] === '+' ? 1 : -1;
+            const offsetHours = Number(tz.slice(1, 3));
+            const offsetMinutes = Number(tz.slice(3, 5));
+            const offsetMillis = ((offsetHours * 60) + offsetMinutes) * 60 * 1000;
+            timestamp -= sign * offsetMillis;
+        }
+
+        const date = new Date(timestamp);
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function formatDateTimeInTimeZone(date, timeZone) {
+        const pad = (n) => String(n).padStart(2, '0');
+
+        if (timeZone && timeZone !== 'Local') {
+            try {
+                const parts = new Intl.DateTimeFormat('en-CA', {
+                    timeZone,
+                    hour12: false,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                }).formatToParts(date);
+
+                const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+                return values.year + '-' + values.month + '-' + values.day + 'T' +
+                    values.hour + ':' + values.minute + ':' + values.second;
+            } catch (_) {
+            }
+        }
+
+        return date.getFullYear() + '-' +
+            pad(date.getMonth() + 1) + '-' +
+            pad(date.getDate()) + 'T' +
+            pad(date.getHours()) + ':' +
+            pad(date.getMinutes()) + ':' +
+            pad(date.getSeconds());
+    }
+
+    function formatAttributeValueForDisplay(value) {
+        const parsed = parseLDAPGeneralizedTime(value);
+        if (!parsed) return value;
+        return formatDateTimeInTimeZone(parsed, serverTimeZone);
+    }
+
+    function appendAttributeValue(container, value, idx, totalValues) {
+        if (typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9-]*=[^,]+,.*=/.test(value)) {
+            const a = document.createElement('a');
+            a.textContent = value.split(',')[0];
+            a.title = value;
+            a.href = "#";
+            a.onclick = (e) => { e.preventDefault(); loadEntry(value); };
+            a.style.color = "#3b82f6";
+            a.style.textDecoration = "none";
+            container.appendChild(a);
+        } else {
+            container.appendChild(document.createTextNode(formatAttributeValueForDisplay(value)));
+        }
+        if (idx < totalValues - 1) {
+            container.appendChild(document.createTextNode(', '));
+        }
+    }
+
     function copyDN() {
         const text = document.getElementById('entry-dn').textContent;
         if (text && text !== "Select an entry to view details.") {
@@ -1161,23 +1252,7 @@ const browseHTML = `<!doctype html>
             tdVals.className = 'val-cell';
             tdVals.dataset.attr = attr;
 
-            data[attr].forEach((val, idx) => {
-                if (typeof val === 'string' && /^[a-zA-Z][a-zA-Z0-9-]*=[^,]+,.*=/.test(val)) {
-                    const a = document.createElement('a');
-                    a.textContent = val.split(',')[0];
-                    a.title = val;
-                    a.href = "#";
-                    a.onclick = (e) => { e.preventDefault(); loadEntry(val); };
-                    a.style.color = "#3b82f6";
-                    a.style.textDecoration = "none";
-                    tdVals.appendChild(a);
-                } else {
-                    tdVals.appendChild(document.createTextNode(val));
-                }
-                if (idx < data[attr].length - 1) {
-                    tdVals.appendChild(document.createTextNode(', '));
-                }
-            });
+            data[attr].forEach((val, idx) => appendAttributeValue(tdVals, val, idx, data[attr].length));
             tr.appendChild(tdAttr);
             tr.appendChild(tdVals);
             tbody.appendChild(tr);
@@ -1362,23 +1437,7 @@ const browseHTML = `<!doctype html>
             } else {
                 cell.style.opacity = '1';
                 cell.innerHTML = '';
-                currentEntryData[attr].forEach((val, idx) => {
-                    if (typeof val === 'string' && /^[a-zA-Z][a-zA-Z0-9-]*=[^,]+,.*=/.test(val)) {
-                        const a = document.createElement('a');
-                        a.textContent = val.split(',')[0];
-                        a.title = val;
-                        a.href = "#";
-                        a.onclick = (e) => { e.preventDefault(); loadEntry(val); };
-                        a.style.color = "#3b82f6";
-                        a.style.textDecoration = "none";
-                        cell.appendChild(a);
-                    } else {
-                        cell.appendChild(document.createTextNode(val));
-                    }
-                    if (idx < currentEntryData[attr].length - 1) {
-                        cell.appendChild(document.createTextNode(', '));
-                    }
-                });
+                currentEntryData[attr].forEach((val, idx) => appendAttributeValue(cell, val, idx, currentEntryData[attr].length));
             }
         });
     }
