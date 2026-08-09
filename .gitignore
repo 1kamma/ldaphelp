@@ -5,3 +5,4 @@ tmphelpers/
 assets/
 __*
 *.log
+openldap-sasl-external-config/

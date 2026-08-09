@@ -41,11 +41,28 @@ type TreeNode struct {
 	HasChildren   bool     `json:"hasChildren"`
 }
 
+type LDAPSearchEntry struct {
+	DN         string              `json:"dn"`
+	Attributes map[string][]string `json:"attributes,omitempty"`
+}
+
+type LDAPSearchResponse struct {
+	Results       []LDAPSearchEntry `json:"results"`
+	Count         int               `json:"count"`
+	SearchedBases []string          `json:"searched_bases"`
+	Errors        []string          `json:"errors,omitempty"`
+	Truncated     bool              `json:"truncated"`
+}
+
+type ldapSearchConn interface {
+	ldapSearcher
+	Close() error
+}
+
 func getLDAPConn(w http.ResponseWriter, r *http.Request, cfg Config) (*ldap.Conn, error) {
 	session, _ := store.Get(r, "ldap-session")
-	dn, ok1 := session.Values["dn"].(string)
-	pwd, ok2 := session.Values["password"].(string)
-	if !ok1 || !ok2 {
+	dn, ok := session.Values["dn"].(string)
+	if !ok || strings.TrimSpace(dn) == "" {
 		if w != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		}
@@ -78,7 +95,34 @@ func getLDAPConn(w http.ResponseWriter, r *http.Request, cfg Config) (*ldap.Conn
 		return nil, err
 	}
 
-	if err := conn.Bind(dn, pwd); err != nil {
+	if pwd, ok := session.Values["password"].(string); ok && pwd != "" {
+		if err := conn.Bind(dn, pwd); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+
+	authMethod, _ := session.Values["auth_method"].(string)
+	if authMethod != "saml" && authMethod != "oidc" && authMethod != "sso" {
+		conn.Close()
+		return nil, fmt.Errorf("session has no ldap password")
+	}
+
+	bindDN := strings.TrimSpace(cfg.ExternalAPI.BindDN)
+	bindPassword := cfg.ExternalAPI.BindPassword
+	if bindDN == "" || bindPassword == "" {
+		storedCreds, err := LoadCredentialsFromDB(cfg.EncryptionKey)
+		if err == nil && strings.TrimSpace(storedCreds.BindDN) != "" && storedCreds.BindPassword != "" {
+			bindDN = strings.TrimSpace(storedCreds.BindDN)
+			bindPassword = storedCreds.BindPassword
+		}
+	}
+	if bindDN == "" || bindPassword == "" {
+		conn.Close()
+		return nil, fmt.Errorf("sso session requires configured ldap bind credentials")
+	}
+	if err := conn.Bind(bindDN, bindPassword); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -166,7 +210,13 @@ func (a *App) handleBrowse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
-	conn, err := getLDAPConn(w, r, a.cfg)
+	var conn ldapSearchConn
+	var err error
+	if a.ldapSearchFn != nil {
+		conn, err = a.ldapSearchFn(w, r, a.cfg)
+	} else {
+		conn, err = getLDAPConn(w, r, a.cfg)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -450,14 +500,7 @@ func (a *App) handleApiNextID(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	bases := []string{a.cfg.Base}
-	if a.cfg.Base == "" {
-		rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
-		rootRes, err := conn.Search(rootReq)
-		if err == nil && len(rootRes.Entries) > 0 {
-			bases = rootRes.Entries[0].GetAttributeValues("namingContexts")
-		}
-	}
+	bases := getLDAPSearchBases(conn, a.cfg, true)
 
 	id := getNextID(conn, bases, attr)
 	w.Header().Set("Content-Type", "text/plain")
@@ -522,14 +565,7 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	bases := []string{a.cfg.Base}
-	if a.cfg.Base == "" {
-		rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
-		rootRes, err := conn.Search(rootReq)
-		if err == nil && len(rootRes.Entries) > 0 {
-			bases = rootRes.Entries[0].GetAttributeValues("namingContexts")
-		}
-	}
+	bases := getLDAPSearchBases(conn, a.cfg, true)
 
 	if hasPosixAccount {
 		if len(req.Attributes["uidNumber"]) == 0 || req.Attributes["uidNumber"][0] == "" {
@@ -680,43 +716,229 @@ func (a *App) handleApiPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiSearch(w http.ResponseWriter, r *http.Request) {
-	filter := r.URL.Query().Get("filter")
-	if filter == "" {
-		http.Error(w, "missing filter", http.StatusBadRequest)
-		return
+	var conn ldapSearchConn
+	var err error
+	if a.ldapSearchFn != nil {
+		conn, err = a.ldapSearchFn(w, r, a.cfg)
+	} else {
+		conn, err = getLDAPConn(w, r, a.cfg)
 	}
-	conn, err := getLDAPConn(w, r, a.cfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 	defer conn.Close()
 
-	bases := []string{a.cfg.Base}
-	if a.cfg.Base == "" {
-		rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
-		rootRes, err := conn.Search(rootReq)
-		if err == nil && len(rootRes.Entries) > 0 {
-			bases = rootRes.Entries[0].GetAttributeValues("namingContexts")
-		}
+	query := r.URL.Query()
+	filter, err := buildLDAPSearchFilter(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	scope, err := parseLDAPSearchScope(query.Get("scope"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	limit, err := parseLDAPSearchLimit(query.Get("limit"), query.Get("full"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
+	bases := query["base"]
+	if len(bases) == 0 {
+		bases = getLDAPSearchBases(conn, a.cfg, true)
+	}
+	bases = normalizeSearchBases(bases)
+
+	attrs := parseSearchAttributes(query)
+	if len(attrs) == 0 {
+		attrs = []string{"dn"}
+	}
+	format := strings.ToLower(strings.TrimSpace(query.Get("format")))
+	structured := format == "entries" || query.Has("attrs") || query.Has("attr") || strings.EqualFold(query.Get("include_attrs"), "true")
+
 	var results []string
+	response := LDAPSearchResponse{SearchedBases: bases}
 	for _, base := range bases {
 		if base == "" {
 			continue
 		}
-		sReq := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 100, 0, false, filter, []string{"dn"}, nil)
+
+		searchLimit := limit
+		if limit > 0 {
+			remaining := limit - len(results)
+			if structured {
+				remaining = limit - len(response.Results)
+			}
+			if remaining <= 0 {
+				response.Truncated = true
+				break
+			}
+			searchLimit = remaining
+		}
+
+		sReq := ldap.NewSearchRequest(base, scope, ldap.NeverDerefAliases, searchLimit, 0, false, filter, attrs, nil)
 		sRes, err := conn.Search(sReq)
 		if err != nil {
+			response.Errors = append(response.Errors, fmt.Sprintf("%s: %v", base, err))
 			continue
 		}
 		for _, ent := range sRes.Entries {
-			results = append(results, ent.DN)
+			if structured {
+				response.Results = append(response.Results, ldapSearchEntryFromLDAP(ent, attrs))
+			} else {
+				results = append(results, ent.DN)
+			}
+			if limit > 0 {
+				if structured && len(response.Results) >= limit {
+					response.Truncated = true
+					break
+				}
+				if !structured && len(results) >= limit {
+					response.Truncated = true
+					break
+				}
+			}
+		}
+		if response.Truncated {
+			break
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if structured {
+		response.Count = len(response.Results)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
 	json.NewEncoder(w).Encode(results)
+}
+
+func buildLDAPSearchFilter(query map[string][]string) (string, error) {
+	filter := strings.TrimSpace(firstQueryValue(query, "filter"))
+	if filter != "" {
+		return filter, nil
+	}
+
+	objectClass := strings.TrimSpace(firstQueryValue(query, "objectClass"))
+	if objectClass == "" {
+		objectClass = strings.TrimSpace(firstQueryValue(query, "object_class"))
+	}
+
+	q := strings.TrimSpace(firstQueryValue(query, "q"))
+	if q == "" {
+		if objectClass != "" {
+			return fmt.Sprintf("(objectClass=%s)", ldap.EscapeFilter(objectClass)), nil
+		}
+		return "(objectClass=*)", nil
+	}
+
+	attributes := query["search_attr"]
+	if len(attributes) == 0 {
+		attributes = []string{"cn", "uid", "mail", "sn", "givenName", "displayName", "description"}
+	}
+
+	var parts []string
+	escapedQ := ldap.EscapeFilter(q)
+	for _, attr := range attributes {
+		attr = strings.TrimSpace(attr)
+		if attr == "" || strings.ContainsAny(attr, "=()") {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("(%s=*%s*)", attr, escapedQ))
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("no valid search attributes")
+	}
+
+	searchFilter := "(|" + strings.Join(parts, "") + ")"
+	if objectClass != "" {
+		searchFilter = fmt.Sprintf("(&(objectClass=%s)%s)", ldap.EscapeFilter(objectClass), searchFilter)
+	}
+	return searchFilter, nil
+}
+
+func firstQueryValue(query map[string][]string, key string) string {
+	values := query[key]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func parseLDAPSearchScope(raw string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "sub", "subtree", "whole":
+		return ldap.ScopeWholeSubtree, nil
+	case "one", "single", "children":
+		return ldap.ScopeSingleLevel, nil
+	case "base", "object":
+		return ldap.ScopeBaseObject, nil
+	default:
+		return 0, fmt.Errorf("invalid scope %q", raw)
+	}
+}
+
+func parseLDAPSearchLimit(raw string, fullRaw string) (int, error) {
+	if strings.EqualFold(strings.TrimSpace(fullRaw), "true") {
+		return 0, nil
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 100, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 0 {
+		return 0, fmt.Errorf("limit must be a non-negative integer")
+	}
+	return limit, nil
+}
+
+func parseSearchAttributes(query map[string][]string) []string {
+	var attrs []string
+	for _, raw := range query["attrs"] {
+		attrs = append(attrs, strings.Split(raw, ",")...)
+	}
+	attrs = append(attrs, query["attr"]...)
+
+	seen := make(map[string]bool)
+	var normalized []string
+	for _, attr := range attrs {
+		attr = strings.TrimSpace(attr)
+		if attr == "" || seen[strings.ToLower(attr)] {
+			continue
+		}
+		seen[strings.ToLower(attr)] = true
+		normalized = append(normalized, attr)
+	}
+	return normalized
+}
+
+func normalizeSearchBases(rawBases []string) []string {
+	seen := make(map[string]bool)
+	var bases []string
+	for _, base := range rawBases {
+		base = strings.TrimSpace(base)
+		if base == "" || seen[strings.ToLower(base)] {
+			continue
+		}
+		seen[strings.ToLower(base)] = true
+		bases = append(bases, base)
+	}
+	return bases
+}
+
+func ldapSearchEntryFromLDAP(ent *ldap.Entry, requestedAttrs []string) LDAPSearchEntry {
+	result := LDAPSearchEntry{DN: ent.DN}
+	if len(requestedAttrs) == 1 && strings.EqualFold(requestedAttrs[0], "dn") {
+		return result
+	}
+	result.Attributes = make(map[string][]string)
+	for _, attr := range ent.Attributes {
+		result.Attributes[attr.Name] = attr.Values
+	}
+	return result
 }
 
 const browseHTML = `<!doctype html>
@@ -746,6 +968,13 @@ const browseHTML = `<!doctype html>
     td { word-break: break-all; color: inherit; font-family: monospace; }
     #quick-create { margin-bottom: 15px; padding: 10px; border-bottom: 1px solid var(--border); }
     .qc-btn { display: inline-block; padding: 4px 8px; margin: 2px; background: #3b82f6; color: white; border-radius: 4px; font-size: 12px; cursor: pointer; text-decoration: none; }
+    #ldap-search { margin-bottom: 15px; padding: 10px; border-bottom: 1px solid var(--border); }
+    #ldap-search input, #ldap-search select { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 6px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+    #ldap-search summary { cursor: pointer; margin-top: 8px; color: #93c5fd; font-size: 13px; }
+    #ldap-search-results { margin-top: 10px; max-height: 260px; overflow-y: auto; font-size: 13px; }
+    .search-result { padding: 6px; border-bottom: 1px solid var(--border); cursor: pointer; overflow-wrap: anywhere; }
+    .search-result:hover { background: var(--hover); }
+    .search-result small { display: block; opacity: 0.75; margin-top: 2px; }
     #context-menu { display: none; position: absolute; background: var(--sidebar-bg); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; padding: 5px 0; border-radius: 4px; }
     .cm-item { padding: 8px 15px; cursor: pointer; color: var(--text); font-size: 14px; }
     .cm-item:hover { background: var(--hover); }
@@ -766,6 +995,24 @@ const browseHTML = `<!doctype html>
     </div>
     <div id="quick-create">
       <strong>Quick Create:</strong><br/>
+    </div>
+    <div id="ldap-search">
+      <strong>LDAP Search</strong>
+      <input type="text" id="ldap-search-q" placeholder="Text search across LDAP..." onkeydown="if (event.key === 'Enter') runLDAPSearch()" />
+      <button class="btn" style="background:#3b82f6; margin:8px 0 0 0; width:100%;" onclick="runLDAPSearch()">Search</button>
+      <details>
+        <summary>Parameterized search</summary>
+        <input type="text" id="ldap-search-filter" placeholder="LDAP filter, e.g. (objectClass=*)" />
+        <input type="text" id="ldap-search-base" placeholder="Base DN override, optional" />
+        <input type="text" id="ldap-search-attrs" value="cn,uid,mail,objectClass" placeholder="Returned attrs, comma-separated" />
+        <select id="ldap-search-scope">
+          <option value="subtree">Subtree</option>
+          <option value="one">One level</option>
+          <option value="base">Base object</option>
+        </select>
+        <input type="number" id="ldap-search-limit" value="100" min="0" placeholder="Limit, 0 for full" />
+      </details>
+      <div id="ldap-search-results"></div>
     </div>
     <ul class="tree-ul" id="tree-root"></ul>
   </div>
@@ -964,6 +1211,86 @@ const browseHTML = `<!doctype html>
         const roots = await res.json();
         const tree = document.getElementById('tree-root');
         roots.forEach(r => tree.appendChild(createNode(r)));
+    }
+
+    function firstAttr(attrs, names) {
+        attrs = attrs || {};
+        const keys = Object.keys(attrs);
+        for (const name of names) {
+            const key = keys.find(k => k.toLowerCase() === name.toLowerCase());
+            if (key && attrs[key] && attrs[key].length > 0) return attrs[key][0];
+        }
+        return '';
+    }
+
+    async function runLDAPSearch() {
+        const resultsDiv = document.getElementById('ldap-search-results');
+        resultsDiv.innerHTML = 'Searching...';
+
+        const params = new URLSearchParams();
+        params.set('format', 'entries');
+
+        const q = document.getElementById('ldap-search-q').value.trim();
+        const filter = document.getElementById('ldap-search-filter').value.trim();
+        const base = document.getElementById('ldap-search-base').value.trim();
+        const attrs = document.getElementById('ldap-search-attrs').value.trim();
+        const scope = document.getElementById('ldap-search-scope').value;
+        const limit = document.getElementById('ldap-search-limit').value.trim();
+
+        if (filter) {
+            params.set('filter', filter);
+        } else if (q) {
+            params.set('q', q);
+        } else {
+            params.set('filter', '(objectClass=*)');
+        }
+        if (base) params.append('base', base);
+        if (attrs) params.set('attrs', attrs);
+        if (scope) params.set('scope', scope);
+        if (limit !== '') {
+            params.set('limit', limit);
+            if (limit === '0') params.set('full', 'true');
+        }
+
+        const res = await fetch('/api/search?' + params.toString());
+        if (!res.ok) {
+            resultsDiv.innerHTML = 'Search failed: ' + await res.text();
+            return;
+        }
+
+        const data = await res.json();
+        const entries = data.results || [];
+        if (entries.length === 0) {
+            resultsDiv.innerHTML = 'No results.';
+            return;
+        }
+
+        resultsDiv.innerHTML = '';
+        const meta = document.createElement('div');
+        meta.style.padding = '6px';
+        meta.style.opacity = '0.8';
+        meta.textContent = data.count + ' result(s)' + (data.truncated ? ' (truncated)' : '');
+        resultsDiv.appendChild(meta);
+
+        entries.forEach(entry => {
+            const div = document.createElement('div');
+            div.className = 'search-result';
+            const label = firstAttr(entry.attributes, ['cn', 'uid', 'mail', 'displayName']) || entry.dn.split(',')[0];
+            div.textContent = label;
+            const dn = document.createElement('small');
+            dn.textContent = entry.dn;
+            div.appendChild(dn);
+            div.onclick = () => loadEntry(entry.dn);
+            resultsDiv.appendChild(div);
+        });
+
+        if (data.errors && data.errors.length > 0) {
+            const errors = document.createElement('div');
+            errors.style.padding = '6px';
+            errors.style.color = '#fca5a5';
+            errors.textContent = 'Some bases failed: ' + data.errors.join('; ');
+            resultsDiv.appendChild(errors);
+        }
     }
 
     function createNode(nodeData) {

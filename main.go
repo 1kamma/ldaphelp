@@ -225,7 +225,8 @@ func (a *App) serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, name st
 }
 
 type App struct {
-	cfg Config
+	cfg          Config
+	ldapSearchFn func(http.ResponseWriter, *http.Request, Config) (ldapSearchConn, error)
 }
 
 func notify(uri, message string) {
@@ -630,6 +631,7 @@ function recoverPassword() {
 		session, _ := store.Get(r, "ldap-session")
 		session.Values["dn"] = dn
 		session.Values["password"] = password
+		session.Values["auth_method"] = "password"
 		session.Values["created"] = time.Now().Unix()
 		session.Values["last_active"] = time.Now().Unix()
 		session.Save(r, w)
@@ -681,16 +683,22 @@ func (a *App) handleApiUserCredential(w http.ResponseWriter, r *http.Request) {
 		}
 		defer conn.Close()
 
-		searchReq := ldap.NewSearchRequest(
-			"", ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-			fmt.Sprintf("(|(uid=%s)(cn=%s)(sn=%s))", ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User)),
-			[]string{"dn"}, nil,
-		)
-
 		var foundDN string
-		searchReq.BaseDN = a.cfg.Base
-		res, err := conn.Search(searchReq)
-		if err == nil && len(res.Entries) > 0 {
+		filter := fmt.Sprintf("(|(uid=%s)(cn=%s)(sn=%s))", ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User), ldap.EscapeFilter(req.User))
+		for _, base := range getLDAPSearchBases(conn, a.cfg, true) {
+			searchReq := ldap.NewSearchRequest(
+				base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 0, false,
+				filter,
+				[]string{"dn"}, nil,
+			)
+			res, err := conn.Search(searchReq)
+			if err != nil || len(res.Entries) == 0 {
+				continue
+			}
+			if foundDN != "" || len(res.Entries) > 1 {
+				http.Error(w, "Multiple users found", http.StatusConflict)
+				return
+			}
 			foundDN = res.Entries[0].DN
 		}
 

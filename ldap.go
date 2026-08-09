@@ -17,6 +17,66 @@ func dialLDAP(serverURL string, timeout time.Duration) (*ldap.Conn, error) {
 	return ldap.DialURL(serverURL, ldap.DialWithDialer(dialer))
 }
 
+type ldapSearcher interface {
+	Search(*ldap.SearchRequest) (*ldap.SearchResult, error)
+}
+
+func getLDAPSearchBases(conn ldapSearcher, cfg Config, includeConfiguredBase bool) []string {
+	seen := make(map[string]bool)
+	var bases []string
+	addBase := func(base string) {
+		base = strings.TrimSpace(base)
+		if base == "" || seen[base] {
+			return
+		}
+		seen[base] = true
+		bases = append(bases, base)
+	}
+
+	if includeConfiguredBase {
+		addBase(cfg.Base)
+	}
+
+	rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
+	rootRes, err := conn.Search(rootReq)
+	if err == nil && len(rootRes.Entries) > 0 {
+		for _, nc := range rootRes.Entries[0].GetAttributeValues("namingContexts") {
+			addBase(nc)
+		}
+	}
+
+	if len(bases) == 0 {
+		addBase(cfg.Base)
+	}
+
+	var pruned []string
+	for i, base := range bases {
+		nested := false
+		for j, other := range bases {
+			if i == j {
+				continue
+			}
+			if ldapDNWithinBase(base, other) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			pruned = append(pruned, base)
+		}
+	}
+	return pruned
+}
+
+func ldapDNWithinBase(dn, base string) bool {
+	dn = strings.ToLower(strings.TrimSpace(dn))
+	base = strings.ToLower(strings.TrimSpace(base))
+	if dn == "" || base == "" || dn == base {
+		return false
+	}
+	return strings.HasSuffix(dn, ","+base)
+}
+
 func AuthenticateUser(cfg Config, username, password string, timeout time.Duration) (string, error) {
 	if username == "" || password == "" {
 		return "", fmt.Errorf("username and password are required")
@@ -35,16 +95,9 @@ func AuthenticateUser(cfg Config, username, password string, timeout time.Durati
 		}
 	}
 
-	bases := []string{cfg.Base}
-	if cfg.Base == "" {
-		rootReq := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"namingContexts"}, nil)
-		rootRes, err := conn.Search(rootReq)
-		if err == nil && len(rootRes.Entries) > 0 {
-			bases = rootRes.Entries[0].GetAttributeValues("namingContexts")
-		}
-		if len(bases) == 0 {
-			return "", fmt.Errorf("no base dn configured and namingContexts not found")
-		}
+	bases := getLDAPSearchBases(conn, cfg, true)
+	if len(bases) == 0 {
+		return "", fmt.Errorf("no base dn configured and namingContexts not found")
 	}
 
 	if username == "admin" || username == "Manager" {
@@ -108,7 +161,7 @@ func AuthenticateUser(cfg Config, username, password string, timeout time.Durati
 	if err := conn.Bind(userDN, password); err != nil {
 		return "", fmt.Errorf("invalid credentials")
 	}
-	
+
 	return userDN, nil
 }
 
