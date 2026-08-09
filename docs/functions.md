@@ -44,11 +44,11 @@ This method acts as a strict schema enforcer for the `Config` struct. After the 
 
 Specifically, it checks that the `ldap_server` and `attribute` (used for login searches) fields are not empty strings. If any essential parameter is missing, it aggregates the missing keys into a human-readable error message and forcefully halts the application startup process, guaranteeing the system never boots into an unstable or unreachable state.
 
-### `initDB() error`
+### `initDB(dbPath string) error`
 
-This function handles the instantiation of the local persistent storage layer. It attempts to open a connection to an SQLite database file named `ldaphelp.db` in the current working directory, pulling in the `github.com/mattn/go-sqlite3` driver bindings.
+This function handles the instantiation of the local persistent storage layer. It opens the configured SQLite database path using the pure-Go `modernc.org/sqlite` driver.
 
-Once the connection pool is established, it executes a preliminary SQL schema definition check. It creates a table named `settings` if it does not already exist, defining an auto-incrementing primary key and a text field designed to hold serialized JSON data. This ensures that the application can seamlessly store frontend layout preferences without requiring an external database cluster.
+Once the connection pool is established, it executes SQL schema definition checks for settings, bind credentials, user credentials, and embedded assets. This ensures that the application can store frontend layout preferences, encrypted LDAP service credentials, per-user credential vault entries, and uploaded branding assets without requiring an external database cluster.
 
 ### `LoadSettingsFromDB() (Settings, error)`
 
@@ -80,7 +80,13 @@ By utilizing Go's native `net.Dialer` paired with the `go-ldap` library's `DialW
 
 This highly dynamic function is the core of the application's authentication matrix. Instead of relying on a single login method, it analyzes the incoming `username` string and routes the authentication attempt through multiple logical fallback paths. If the string explicitly contains an equals sign (e.g., `uid=bob,ou=users`), it attempts to bind to the directory using the string as a literal Distinguished Name immediately.
 
-If the user logs in as `admin` or `Manager`, it attempts a brute-force sweep across common administrative DN permutations (like `cn=admin,cn=config` or `cn=Directory Manager`) to securely log into the configuration partitions. For standard users, it falls back to conducting a broad subtree search across the directory, looking for the specific configuration attribute (like `uid`) matching the username, extracting their exact DN, and binding against it with the supplied password to verify their identity.
+If the user logs in as `admin` or `Manager`, it attempts a sweep across common administrative DN permutations (like `cn=admin,cn=config` or `cn=Directory Manager`) to support typical LDAP administrator layouts. For standard users, it resolves all LDAP search bases from the Root DSE `namingContexts` plus the configured base, prunes duplicate/nested bases, searches for the configured login attribute (like `uid`), extracts the exact DN, and binds against it with the supplied password to verify identity.
+
+### `getLDAPSearchBases(conn ldapSearcher, cfg Config, includeConfiguredBase bool) []string`
+
+This helper discovers the LDAP naming contexts available from the Root DSE and returns the bases that should be used for whole-directory operations. When requested, it includes the configured `base` as a candidate and then removes nested duplicates so the same subtree is not searched twice.
+
+The helper is used by authentication, `/api/search`, ID generation, quick-create helpers, and credential lookup. This makes directory-wide behavior consistent across the application instead of relying on a single configured base DN.
 
 ### `MakeSSHA(password string) (string, error)`
 
@@ -118,11 +124,13 @@ The application now robustly supports dynamic schema inspection. It maps OIDs to
 
 ## API & Browser Flow (`browser.go`)
 
-### `getLDAPConn(r *http.Request, cfg Config) (*ldap.Conn, error)`
+### `getLDAPConn(w http.ResponseWriter, r *http.Request, cfg Config) (*ldap.Conn, error)`
 
 This essential middleware-like helper securely retrieves the user's active connection state on every single backend API request. Because the server is entirely stateless, it must re-authenticate the user against the LDAP server to securely execute their requested commands.
 
-It extracts the encrypted session cookie from the incoming HTTP request, pulls out the user's Distinguished Name and stored password, and actively dials the LDAP server. By attempting an immediate bind with these stored credentials, it intrinsically validates that the user's account is still active and possesses the correct LDAP permissions to perform the action before returning the connected pointer.
+It extracts the encrypted session cookie from the incoming HTTP request, validates the session TTL/idle timeout, and actively dials the LDAP server. For password logins, it binds with the user's DN and password, so LDAP ACLs apply directly to that user.
+
+For SSO-style sessions (`saml`, `oidc`, or `sso`) where no LDAP password is available, it binds with configured service credentials from `external_api.bind_dn` / `external_api.bind_password`, falling back to encrypted credentials stored in SQLite. In that mode, LDAP ACLs apply to the service bind DN, so the service account must be scoped to the permissions SSO users should receive.
 
 ### `getNextID(conn *ldap.Conn, bases []string, attr string) string`
 
@@ -186,9 +194,29 @@ It intercepts this plaintext string and immediately passes it through the `MakeS
 
 ### `(*App) handleApiSearch`
 
-This highly dynamic endpoint provides the backbone for the application's context menu pop-ups, such as the modal for adding users to specific groups. It expects a raw LDAP filter string (e.g., `(&(objectClass=posixAccount)(!(uid=bob)))`) passed via the query parameters.
+This endpoint powers both the application's context menu pop-ups and the LDAP Search panel in the browser sidebar. It remains backward-compatible with the original DN-only mode:
 
-If the configuration lacks a predefined base, the function will dynamically iterate across all global `namingContexts` discovered from the Root DSE. It performs a subtree search across these partitions, executing the complex filtering logic directly against the LDAP engine, and aggregating a clean JSON array of matching Distinguished Names to return to the frontend for selection.
+```text
+/api/search?filter=(objectClass=posixAccount)
+```
+
+When `format=entries` or returned attributes are requested, it returns structured results containing DNs, attributes, searched bases, errors, result count, and truncation status.
+
+Supported parameters include:
+
+- `filter`: raw LDAP filter.
+- `q`: safe text search across common identity attributes.
+- `search_attr`: repeatable attribute list used by `q`.
+- `objectClass` / `object_class`: object class restriction.
+- `base`: repeatable base DN override.
+- `scope`: `subtree`, `one`, or `base`.
+- `attrs`: comma-separated returned attributes.
+- `attr`: repeatable returned attribute.
+- `limit`: maximum result count; `0` means no application-side limit.
+- `full=true`: disables the application-side result limit.
+- `format=entries`: requests structured output instead of a DN array.
+
+When no explicit base is supplied, the endpoint searches all Root DSE `namingContexts` plus the configured base, with nested duplicates pruned.
 
 ### `(*App) handleApiSchemaManager`
 
@@ -203,3 +231,27 @@ This endpoint processes `POST /api/schema_modify` requests to apply schema addit
 These matched handler functions manage the application's configuration state dynamically from the web interface. The `Get` handler simply encodes the active `App.cfg.Settings` struct into JSON and serves it to the browser to populate the Settings Modal text area.
 
 The `Post` handler absorbs a newly customized JSON payload, actively unmarshals it over the running configuration in memory, and triggers `SaveSettingsToDB` to instantly persist the new state to the SQLite storage. This dual-path system guarantees that layout themes, context menu buttons, and quick-create templates can be updated and applied on the fly without a server restart.
+
+---
+
+## Build and Test Notes
+
+The project uses the pure-Go `modernc.org/sqlite` driver, so static cross-compilation is supported without a C toolchain:
+
+```bash
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ldaphelp-linux-arm64 .
+```
+
+The test files are stored in `_test/`. There are no root-level test symlinks. Use `./scripts/run_tests.sh` to run them. The script temporarily copies tests into the package directory, runs `go test ./...`, and removes the temporary copies afterward. This is necessary because Go ignores underscore-prefixed directories during `./...` discovery, and these tests need the root `package main` compile context to cover unexported helpers.
+
+Run tests with:
+
+```bash
+./scripts/run_tests.sh
+```
+
+Run coverage with:
+
+```bash
+./scripts/run_tests.sh -cover
+```
