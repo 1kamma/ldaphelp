@@ -95,7 +95,7 @@ type quickCreateFragmentData struct {
 }
 
 var settingsTemplate = template.Must(template.New("settings-fragment").Parse(`
-<div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: 600px;">
+<div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: min(600px, calc(100vw - 20px));">
   <form hx-post="/ui/settings" hx-target="#settings-modal-content" hx-swap="outerHTML" style="display:flex; flex-direction:column; min-height:0; max-height:80vh;">
     <div class="modal-scroll-body" style="padding:20px;">
       <h3>Settings</h3>

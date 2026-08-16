@@ -1050,11 +1050,12 @@ const browseHTML = `<!doctype html>
     .cm-item { padding: 8px 15px; cursor: pointer; color: var(--text); font-size: 14px; }
     .cm-item:hover { background: var(--hover); }
     #settings-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center; }
-    .modal-content { background: var(--sidebar-bg); padding: 20px; border-radius: 6px; width: 400px; color: var(--text); border: 1px solid var(--border); box-sizing: border-box; }
-    .modal-scroll-shell { display: flex; flex-direction: column; max-height: 80vh; overflow: hidden; }
-    .modal-scroll-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    #qc-modal, #group-select-modal, #settings-modal, #credential-modal, #schema-modal { padding: 10px; box-sizing: border-box; }
+    .modal-content { background: var(--sidebar-bg); padding: 20px; border-radius: 6px; width: 400px; color: var(--text); border: 1px solid var(--border); box-sizing: border-box; max-width: 100%; }
+    .modal-scroll-shell { display: flex; flex-direction: column; max-height: min(92vh, calc(100dvh - 20px)); overflow: hidden; }
+    .modal-scroll-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
     .modal-actions { text-align: right; margin-top: 15px; }
-    .modal-footer-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 0; background: var(--sidebar-bg); position: sticky; bottom: 0; }
+    .modal-footer-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 0; background: var(--sidebar-bg); position: sticky; bottom: 0; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
     .form-help { margin: 4px 0 10px 0; color: #9ca3af; font-size: 12px; line-height: 1.4; }
     .type-badge { display:inline-block; margin-right:6px; margin-bottom:6px; padding:2px 8px; border-radius:999px; background: var(--hover); font-size:12px; }
     .image-preview { display:block; margin-top:8px; max-width:320px; max-height:240px; border:1px solid var(--border); border-radius:6px; }
@@ -1091,7 +1092,8 @@ const browseHTML = `<!doctype html>
       .btn { padding: 8px 10px; }
       th, td { padding: 8px; font-size: 13px; }
       table { min-width: 520px; }
-      .modal-content { width: calc(100vw - 12px) !important; max-height: 92vh; padding: 14px; border-radius: 10px; }
+      #qc-modal, #group-select-modal, #settings-modal, #credential-modal, #schema-modal { align-items: flex-start; padding: max(8px, env(safe-area-inset-top)) 6px max(8px, env(safe-area-inset-bottom)); }
+      .modal-content { width: calc(100vw - 12px) !important; max-height: min(94vh, calc(100dvh - 16px)); padding: 14px; border-radius: 10px; }
       .modal-scroll-body { padding-right: 2px; }
       .modal-actions { display:flex; gap:8px; flex-wrap:wrap; }
       .modal-footer-fixed { padding-top: 10px; }
@@ -1193,7 +1195,7 @@ const browseHTML = `<!doctype html>
   </div>
 
   <div id="group-select-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content modal-scroll-shell" style="width: 520px;">
+    <div class="modal-content modal-scroll-shell" style="width: min(520px, calc(100vw - 20px));">
       <div class="modal-scroll-body">
         <h3 id="group-select-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Select Group</h3>
         <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; min-height: 120px; overflow-y: auto;"></div>
@@ -1205,7 +1207,7 @@ const browseHTML = `<!doctype html>
   </div>
 
   <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: 600px;">
+    <div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: min(600px, calc(100vw - 20px));">
       <div class="modal-scroll-body" style="padding: 20px;">Loading settings...</div>
     </div>
   </div>
