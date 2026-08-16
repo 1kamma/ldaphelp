@@ -51,10 +51,12 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 	body := rr.Body.String()
 	checks := []string{
 		"settings-type-actions-json",
+		"settings-icons-json",
 		"settings-default-gid-number",
 		"modal-scroll-shell",
 		"Remove from group",
 		"Binary value (base64)",
+		"Filter groups...",
 	}
 	for _, check := range checks {
 		if !strings.Contains(body, check) {

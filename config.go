@@ -31,9 +31,10 @@ type EntryTypeActionConfig struct {
 }
 
 type UISettings struct {
-	Theme       string                           `yaml:"theme" json:"theme"`
-	ContextMenu []ContextMenuAction              `yaml:"context_menu" json:"context_menu"`
-	TypeActions map[string]EntryTypeActionConfig `yaml:"type_actions" json:"type_actions"`
+	Theme            string                           `yaml:"theme" json:"theme"`
+	ContextMenu      []ContextMenuAction              `yaml:"context_menu" json:"context_menu"`
+	TypeActions      map[string]EntryTypeActionConfig `yaml:"type_actions" json:"type_actions"`
+	ObjectClassIcons map[string]string                `yaml:"object_class_icons" json:"object_class_icons"`
 }
 
 type SSOSettings struct {
@@ -188,6 +189,21 @@ func LoadConfig(path string) (Config, error) {
 							"posixgroup":   {AddMembers: true},
 							"groupofnames": {AddMembers: true},
 						},
+						ObjectClassIcons: map[string]string{
+							"posixaccount":       "🐧",
+							"inetorgperson":      "🪪",
+							"person":             "👤",
+							"groupofnames":       "🗂️",
+							"posixgroup":         "👥",
+							"group":              "👥",
+							"organizationalunit": "📁",
+							"domain":             "🌍",
+							"dcobject":           "🌍",
+							"subschema":          "📜",
+							"monitor":            "📊",
+							"computer":           "💻",
+							"device":             "💻",
+						},
 					},
 					Objects: map[string]ObjectTemplate{
 						"inetOrgPerson": {
@@ -251,6 +267,23 @@ func LoadConfig(path string) (Config, error) {
 			"groupofnames": {AddMembers: true},
 		}
 	}
+	if cfg.Settings.UI.ObjectClassIcons == nil {
+		cfg.Settings.UI.ObjectClassIcons = map[string]string{
+			"posixaccount":       "🐧",
+			"inetorgperson":      "🪪",
+			"person":             "👤",
+			"groupofnames":       "🗂️",
+			"posixgroup":         "👥",
+			"group":              "👥",
+			"organizationalunit": "📁",
+			"domain":             "🌍",
+			"dcobject":           "🌍",
+			"subschema":          "📜",
+			"monitor":            "📊",
+			"computer":           "💻",
+			"device":             "💻",
+		}
+	}
 	cfg.Server.Joined = strings.Join([]string{cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)}, ":")
 	dbSettings, errDb := LoadSettingsFromDB()
 	if errDb == nil && (dbSettings.UI.Theme != "" || len(dbSettings.Objects) > 0) {
@@ -279,6 +312,14 @@ func LoadConfig(path string) (Config, error) {
 			}
 			for k, v := range yamlSettings.UI.TypeActions {
 				merged.UI.TypeActions[k] = v
+			}
+		}
+		if len(yamlSettings.UI.ObjectClassIcons) > 0 {
+			if len(merged.UI.ObjectClassIcons) == 0 {
+				merged.UI.ObjectClassIcons = map[string]string{}
+			}
+			for k, v := range yamlSettings.UI.ObjectClassIcons {
+				merged.UI.ObjectClassIcons[k] = v
 			}
 		}
 

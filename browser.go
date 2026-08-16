@@ -1050,9 +1050,15 @@ const browseHTML = `<!doctype html>
     .modal-scroll-shell { display: flex; flex-direction: column; max-height: 80vh; overflow: hidden; }
     .modal-scroll-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .modal-actions { text-align: right; margin-top: 15px; }
+    .modal-footer-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 0; background: var(--sidebar-bg); position: sticky; bottom: 0; }
     .form-help { margin: 4px 0 10px 0; color: #9ca3af; font-size: 12px; line-height: 1.4; }
     .type-badge { display:inline-block; margin-right:6px; margin-bottom:6px; padding:2px 8px; border-radius:999px; background: var(--hover); font-size:12px; }
     .image-preview { display:block; margin-top:8px; max-width:320px; max-height:240px; border:1px solid var(--border); border-radius:6px; }
+    .schema-card { background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px; }
+    .schema-card h4 { margin: 0 0 8px 0; font-family: sans-serif; }
+    .schema-section-title { margin-top: 14px; margin-bottom: 6px; font-size: 13px; font-weight: 600; font-family: sans-serif; color: inherit; }
+    .schema-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+    .schema-raw { margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #9ca3af; }
   </style>
 </head>
 <body>
@@ -1121,10 +1127,12 @@ const browseHTML = `<!doctype html>
   <div id="context-menu"></div>
 
   <div id="qc-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content" style="max-height: 80vh; overflow-y: auto;">
-      <h3 id="qc-title">Quick Create</h3>
-      <div id="qc-form"></div>
-      <div class="modal-actions">
+    <div class="modal-content modal-scroll-shell">
+      <div class="modal-scroll-body">
+        <h3 id="qc-title">Quick Create</h3>
+        <div id="qc-form"></div>
+      </div>
+      <div class="modal-actions modal-footer-fixed">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('qc-modal').style.display='none'">Cancel</button>
         <button class="btn" style="background: #10b981;" onclick="submitQuickCreate()">Create</button>
       </div>
@@ -1137,14 +1145,15 @@ const browseHTML = `<!doctype html>
         <h3 id="group-select-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Select Group</h3>
         <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; min-height: 120px; overflow-y: auto;"></div>
       </div>
-      <div class="modal-actions" style="flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 0;">
+      <div class="modal-actions modal-footer-fixed">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('group-select-modal').style.display='none'">Cancel</button>
       </div>
     </div>
   </div>
 
   <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content" style="max-height: 80vh; overflow-y: auto; width: 600px;">
+    <div class="modal-content modal-scroll-shell" style="width: 600px;">
+      <div class="modal-scroll-body">
       <h3>Settings</h3>
 
       <h4>Theme & Custom Context Menu (JSON)</h4>
@@ -1158,6 +1167,10 @@ const browseHTML = `<!doctype html>
       <h4>Entry Type Actions (JSON)</h4>
       <div class="form-help">Map object classes to right-click capabilities like adding members or setting passwords.</div>
       <textarea id="settings-type-actions-json" rows="8" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
+
+      <h4>ObjectClass Icons (JSON)</h4>
+      <div class="form-help">Assign an icon per objectClass. Example: {"inetorgperson":"🪪","posixaccount":"🐧"}</div>
+      <textarea id="settings-icons-json" rows="6" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
 
       <h4>Default gidNumber</h4>
       <div class="form-help">Used as the default value for new posixAccount and posixGroup entries. Defaults to 1000.</div>
@@ -1222,27 +1235,28 @@ const browseHTML = `<!doctype html>
       <input type="text" id="oidc-clientid" class="input-field" placeholder="Client ID" style="width: 100%; margin-top: 5px;" />
       <input type="text" id="oidc-clientsecret" class="input-field" placeholder="Client Secret" style="width: 100%; margin-top: 5px;" />
 
-      <div class="modal-actions" style="margin-top: 20px;">
+      </div>
+      <div class="modal-actions modal-footer-fixed">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('settings-modal').style.display='none'">Cancel</button>
         <button class="btn" style="background: #10b981;" onclick="saveSettings()">Save</button>
       </div>
     </div>
   </div>
-    </div>
-  </div>
 
   <div id="credential-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content" style="max-width: 400px;">
-      <h3 style="margin-top:0;">Add Credential to Vault</h3>
-      <div class="form-group">
-        <label>User (cn, uid, sn, or full DN)</label>
-        <input type="text" id="cred-user" class="input-field" style="width: 100%; box-sizing: border-box;" />
+    <div class="modal-content modal-scroll-shell" style="max-width: 400px;">
+      <div class="modal-scroll-body">
+        <h3 style="margin-top:0;">Add Credential to Vault</h3>
+        <div class="form-group">
+          <label>User (cn, uid, sn, or full DN)</label>
+          <input type="text" id="cred-user" class="input-field" style="width: 100%; box-sizing: border-box;" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="cred-password" class="input-field" style="width: 100%; box-sizing: border-box;" />
+        </div>
       </div>
-      <div class="form-group">
-        <label>Password</label>
-        <input type="password" id="cred-password" class="input-field" style="width: 100%; box-sizing: border-box;" />
-      </div>
-      <div class="modal-actions" style="margin-top: 20px;">
+      <div class="modal-actions modal-footer-fixed">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('credential-modal').style.display='none'">Cancel</button>
         <button class="btn" style="background: #10b981;" onclick="submitAddCredential()">Save</button>
       </div>
@@ -1310,20 +1324,35 @@ const browseHTML = `<!doctype html>
         return merged;
     }
 
+    function getObjectClassIconMap() {
+        return {
+            posixaccount: '🐧',
+            inetorgperson: '🪪',
+            person: '👤',
+            user: '👤',
+            groupofnames: '🗂️',
+            posixgroup: '👥',
+            group: '👥',
+            organizationalunit: '📁',
+            domain: '🌍',
+            dcobject: '🌍',
+            subschema: '📜',
+            monitor: '📊',
+            computer: '💻',
+            device: '💻',
+        };
+    }
+
     function getIcon(ocs) {
         if (!ocs) return '📄';
         const classes = ocs.map(c => c.toLowerCase());
-        if (classes.includes('posixaccount')) return '🐧';
-        if (classes.includes('inetorgperson')) return '🪪';
-        if (classes.includes('person') || classes.includes('user')) return '👤';
-        if (classes.includes('groupofnames')) return '🗂️';
-        if (classes.includes('posixgroup')) return '👥';
-        if (classes.includes('group')) return '👥';
-        if (classes.includes('organizationalunit')) return '📁';
-        if (classes.includes('domain') || classes.includes('dcobject')) return '🌍';
-        if (classes.includes('subschema')) return '📜';
-        if (classes.includes('monitor')) return '📊';
-        if (classes.includes('computer') || classes.includes('device')) return '💻';
+        const iconMap = {
+            ...getObjectClassIconMap(),
+            ...((settings && settings.ui && settings.ui.object_class_icons) || {}),
+        };
+        for (const cls of classes) {
+            if (iconMap[cls]) return iconMap[cls];
+        }
         return '📄';
     }
 
@@ -1692,6 +1721,81 @@ const browseHTML = `<!doctype html>
         return isImageValue(value) || isBase64BinaryValue(value);
     }
 
+    function parseSchemaDefinition(raw) {
+        const readNames = () => {
+            const listMatch = raw.match(/NAME\s+\(([^)]+)\)/);
+            if (listMatch) {
+                return [...listMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+            }
+            const singleMatch = raw.match(/NAME\s+'([^']+)'/);
+            return singleMatch ? [singleMatch[1]] : [];
+        };
+        const readList = (label) => {
+            const match = raw.match(new RegExp(label + '\\s+([A-Za-z0-9._-]+|\\([^)]+\\))'));
+            if (!match) return [];
+            return match[1].replace(/^\(|\)$/g, '').split('$').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+        };
+        const names = readNames();
+        const oidMatch = raw.match(/^\(\s*([0-9.]+)/);
+        const descMatch = raw.match(/DESC\s+'([^']+)'/);
+        const syntaxMatch = raw.match(/SYNTAX\s+([0-9.]+(?:\{\d+\})?)/);
+        return {
+            raw,
+            oid: oidMatch ? oidMatch[1] : '',
+            name: names[0] || 'Unnamed',
+            aliases: names.slice(1),
+            desc: descMatch ? descMatch[1] : '',
+            sup: readList('SUP'),
+            must: readList('MUST'),
+            may: readList('MAY'),
+            syntax: syntaxMatch ? syntaxMatch[1] : '',
+            kind: raw.includes(' AUXILIARY') ? 'AUXILIARY' : (raw.includes(' ABSTRACT') ? 'ABSTRACT' : 'STRUCTURAL'),
+            singleValue: raw.includes(' SINGLE-VALUE'),
+        };
+    }
+
+    function renderSubschemaValue(attrName, values) {
+        const wrapper = document.createElement('div');
+        const lower = (attrName || '').toLowerCase();
+        const isObjectClasses = lower === 'objectclasses';
+        const isAttributeTypes = lower === 'attributetypes';
+        if (!isObjectClasses && !isAttributeTypes) {
+            values.forEach((val, idx) => appendAttributeValue(wrapper, attrName, val, idx, values.length));
+            return wrapper;
+        }
+
+        const title = document.createElement('div');
+        title.className = 'schema-section-title';
+        title.textContent = (isObjectClasses ? 'Parsed Object Classes' : 'Parsed Attribute Types') + ' (' + values.length + ')';
+        wrapper.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'schema-grid';
+        values.forEach(raw => {
+            const parsed = parseSchemaDefinition(raw);
+            const card = document.createElement('div');
+            card.className = 'schema-card';
+            card.innerHTML = '<h4>' + parsed.name + '</h4>' +
+                '<div>' + (parsed.oid ? '<span class="type-badge">OID ' + parsed.oid + '</span>' : '') +
+                (isObjectClasses ? '<span class="type-badge">' + parsed.kind + '</span>' : '') +
+                (!isObjectClasses && parsed.singleValue ? '<span class="type-badge">SINGLE-VALUE</span>' : '') +
+                '</div>' +
+                (parsed.aliases.length ? '<div><strong>Aliases:</strong> ' + parsed.aliases.map(a => '<span class="type-badge">' + a + '</span>').join('') + '</div>' : '') +
+                (parsed.desc ? '<div><strong>Description:</strong> ' + parsed.desc + '</div>' : '') +
+                (parsed.sup.length ? '<div><strong>SUP:</strong> ' + parsed.sup.map(a => '<span class="type-badge">' + a + '</span>').join('') + '</div>' : '') +
+                (parsed.must.length ? '<div><strong>MUST:</strong> ' + parsed.must.map(a => '<span class="type-badge">' + a + '</span>').join('') + '</div>' : '') +
+                (parsed.may.length ? '<div><strong>MAY:</strong> ' + parsed.may.map(a => '<span class="type-badge">' + a + '</span>').join('') + '</div>' : '') +
+                (!isObjectClasses && parsed.syntax ? '<div><strong>SYNTAX:</strong> <span class="type-badge">' + parsed.syntax + '</span></div>' : '');
+            const details = document.createElement('details');
+            details.innerHTML = '<summary>Raw definition</summary><div class="schema-raw"></div>';
+            details.querySelector('.schema-raw').textContent = raw;
+            card.appendChild(details);
+            grid.appendChild(card);
+        });
+        wrapper.appendChild(grid);
+        return wrapper;
+    }
+
     function appendAttributeValue(container, attrName, value, idx, totalValues) {
         const attrLower = (attrName || '').toLowerCase();
         if (isImageValue(value)) {
@@ -1775,6 +1879,8 @@ const browseHTML = `<!doctype html>
         tbody.innerHTML = '';
 
         const attrs = Object.keys(data).sort();
+        const currentOCs = (Object.keys(data).find(k => k.toLowerCase() === 'objectclass') || null);
+        const isSubschemaEntry = currentOCs && (data[currentOCs] || []).some(v => String(v).toLowerCase() === 'subschema');
         for (const attr of attrs) {
             const tr = document.createElement('tr');
             const tdAttr = document.createElement('td');
@@ -1783,7 +1889,11 @@ const browseHTML = `<!doctype html>
             tdVals.className = 'val-cell';
             tdVals.dataset.attr = attr;
 
-            data[attr].forEach((val, idx) => appendAttributeValue(tdVals, attr, val, idx, data[attr].length));
+            if (isSubschemaEntry && ['objectclasses', 'attributetypes'].includes(attr.toLowerCase())) {
+                tdVals.appendChild(renderSubschemaValue(attr, data[attr]));
+            } else {
+                data[attr].forEach((val, idx) => appendAttributeValue(tdVals, attr, val, idx, data[attr].length));
+            }
             tr.appendChild(tdAttr);
             tr.appendChild(tdVals);
             tbody.appendChild(tr);
@@ -2063,6 +2173,7 @@ const browseHTML = `<!doctype html>
             }, null, 2);
             document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
             document.getElementById('settings-type-actions-json').value = JSON.stringify(data.ui?.type_actions || {}, null, 2);
+            document.getElementById('settings-icons-json').value = JSON.stringify(data.ui?.object_class_icons || {}, null, 2);
             document.getElementById('settings-default-gid-number').value = data.default_gid_number || '1000';
             document.getElementById('settings-default-group').value = data.default_group || '';
 
@@ -2095,11 +2206,13 @@ const browseHTML = `<!doctype html>
             const ui = JSON.parse(document.getElementById('settings-ui-json').value || '{}');
             const objects = JSON.parse(document.getElementById('settings-objects-json').value || '{}');
             const typeActions = JSON.parse(document.getElementById('settings-type-actions-json').value || '{}');
+            const objectClassIcons = JSON.parse(document.getElementById('settings-icons-json').value || '{}');
 
             const newSettings = {
                 ui: {
                     ...ui,
                     type_actions: typeActions,
+                    object_class_icons: objectClassIcons,
                 },
                 objects: objects,
                 default_gid_number: document.getElementById('settings-default-gid-number').value || '1000',
@@ -2141,7 +2254,7 @@ const browseHTML = `<!doctype html>
                 alert('Failed to save settings');
             }
         } catch (e) {
-            alert('Invalid JSON format for UI, objects, or entry type actions');
+            alert('Invalid JSON format for UI, objects, entry type actions, or objectClass icons');
         }
     }
 
@@ -2349,16 +2462,57 @@ const browseHTML = `<!doctype html>
         }
 
         listDiv.innerHTML = '';
-        groups.forEach(g => {
-            const div = document.createElement('div');
-            div.style.padding = "8px";
-            div.style.borderBottom = "1px solid var(--border)";
-            div.style.cursor = "pointer";
-            div.title = g;
-            div.textContent = g.split(',')[0];
-            div.onclick = () => addToGroup(type, g, userDN);
-            listDiv.appendChild(div);
-        });
+        listDiv.style.display = 'flex';
+        listDiv.style.flexDirection = 'column';
+        listDiv.style.maxHeight = 'min(70vh, 520px)';
+
+        const filterWrap = document.createElement('div');
+        filterWrap.style.padding = '8px';
+        filterWrap.style.borderBottom = '1px solid var(--border)';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Filter groups...';
+        input.style.width = '100%';
+        input.style.padding = '6px';
+        input.style.boxSizing = 'border-box';
+        input.style.background = 'var(--bg)';
+        input.style.color = 'var(--text)';
+        input.style.border = '1px solid var(--border)';
+        filterWrap.appendChild(input);
+
+        const resultsDiv = document.createElement('div');
+        resultsDiv.style.flex = '1 1 auto';
+        resultsDiv.style.minHeight = '0';
+        resultsDiv.style.overflowY = 'auto';
+
+        listDiv.appendChild(filterWrap);
+        listDiv.appendChild(resultsDiv);
+
+        const render = (needle) => {
+            resultsDiv.innerHTML = '';
+            const q = (needle || '').toLowerCase().trim();
+            const filtered = q ? groups.filter(g => g.toLowerCase().includes(q) || g.split(',')[0].toLowerCase().includes(q)) : groups;
+            if (filtered.length === 0) {
+                const empty = document.createElement('div');
+                empty.style.padding = '8px';
+                empty.textContent = 'No matches.';
+                resultsDiv.appendChild(empty);
+                return;
+            }
+            filtered.forEach(g => {
+                const div = document.createElement('div');
+                div.style.padding = '8px';
+                div.style.borderBottom = '1px solid var(--border)';
+                div.style.cursor = 'pointer';
+                div.title = g;
+                div.textContent = g.split(',')[0];
+                div.onclick = () => addToGroup(type, g, userDN);
+                resultsDiv.appendChild(div);
+            });
+        };
+
+        input.oninput = () => render(input.value);
+        render('');
     }
 
     async function addToGroup(type, groupDN, userDN) {
@@ -2601,8 +2755,9 @@ const browseHTML = `<!doctype html>
 
     loadRoots();
   </script>
-<div id="schema-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;overflow-y:auto;padding:20px;">
-    <div style="background:#1e1e1e;margin:20px auto;padding:20px;width:90%;max-width:1200px;border-radius:8px;">
+<div id="schema-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;align-items:center;justify-content:center;">
+    <div class="modal-content modal-scroll-shell" style="width:90%;max-width:1200px;">
+        <div class="modal-scroll-body">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
             <h2 style="margin:0;">Schema Manager</h2>
             <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
@@ -2626,6 +2781,10 @@ const browseHTML = `<!doctype html>
             <button onclick="addSchemaItem()" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Add Item</button>
         </div>
         <div id="schema-content" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(400px, 1fr));gap:20px;"></div>
+        </div>
+        <div class="modal-actions modal-footer-fixed">
+            <button onclick="document.getElementById('schema-modal').style.display='none'" class="btn" style="background:#6b7280;">Close</button>
+        </div>
     </div>
 </div>
 
