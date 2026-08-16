@@ -310,6 +310,22 @@ func loadSchemaDef(conn ldapSearcher) (SchemaDef, error) {
 	sort.Slice(schemaDef.AttributeTypes, func(i, j int) bool {
 		return schemaDef.AttributeTypes[i].Name < schemaDef.AttributeTypes[j].Name
 	})
+	return schemaDef, nil
+}
+
+func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
+	conn, err := getLDAPConn(w, r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	schemaDef, err := loadSchemaDef(conn)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	return schemaDef, nil
 }

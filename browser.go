@@ -2581,9 +2581,10 @@ const browseHTML = `<!doctype html>
                 <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
             </div>
         </div>
+<<<<<<< HEAD
         <div class="header-actions" style="margin-bottom:20px; justify-content:flex-start;">
-            <button onclick="loadSchema('objectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
-            <button onclick="loadSchema('attributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
+            <button hx-get="/ui/schema/object-classes" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
+            <button hx-get="/ui/schema/attribute-types" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
         </div>
         <div id="schema-admin-login" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
             <h3>Schema Admin Login</h3>
@@ -2608,11 +2609,12 @@ const browseHTML = `<!doctype html>
 </div>
 
 <script>
-let currentSchemaData = null;
-
 function showSchemaManager() {
     document.getElementById('schema-modal').style.display = 'flex';
-    loadSchema('objectClasses');
+    prepareSchemaTab('olcObjectClasses');
+    if (window.htmx) {
+        htmx.ajax('GET', '/ui/schema/object-classes', { target: '#schema-content', swap: 'innerHTML' });
+    }
 }
 
 let tempAdminDN = '';
@@ -2627,69 +2629,30 @@ function unlockSchemaEdit() {
     }
 }
 
-async function loadSchema(type) {
-    const content = document.getElementById('schema-content');
-    content.innerHTML = '<div style="color:#aaa;">Loading...</div>';
+function prepareSchemaTab(attr) {
+    document.getElementById('schema-attr').value = attr;
+}
 
-    try {
-        const res = await fetch('/api/schema_manager');
-        if (!res.ok) throw new Error(await res.text());
-        currentSchemaData = await res.json();
-
-        if (currentSchemaData.canEdit || (tempAdminDN && tempAdminPwd)) {
-            document.getElementById('schema-add-form').style.display = 'block';
-            document.getElementById('schema-admin-login').style.display = 'none';
-        } else {
-            document.getElementById('schema-add-form').style.display = 'none';
-            document.getElementById('schema-admin-login').style.display = 'block';
-        }
-
-        let html = '';
-        const badgeList = (items) => (items || []).map(item => '<span class="type-badge">' + item + '</span>').join('');
-        if (type === 'objectClasses') {
-            document.getElementById('schema-attr').value = 'olcObjectClasses';
-            currentSchemaData.objectClasses.forEach(oc => {
-                html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
-                    '<h3 style="margin-top:0;color:#3b82f6;">' + (oc.name || 'unnamed') + '</h3>' +
-                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + oc.dn + '</div>' +
-                    '<div style="margin-bottom:8px;">' +
-                        '<span class="type-badge">' + (oc.kind || 'STRUCTURAL') + '</span>' +
-                        (oc.oid ? '<span class="type-badge">OID ' + oc.oid + '</span>' : '') +
-                    '</div>';
-                if (oc.aliases && oc.aliases.length > 1) html += '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + badgeList(oc.aliases.slice(1)) + '</div>';
-                if (oc.desc) html += '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + oc.desc + '</div>';
-                if (oc.sup && oc.sup.length > 0) html += '<div style="margin-bottom:8px;"><strong>SUP:</strong> ' + badgeList(oc.sup) + '</div>';
-                if (oc.must && oc.must.length > 0) html += '<div style="margin-bottom:8px;"><strong>MUST:</strong><div>' + badgeList(oc.must) + '</div></div>';
-                if (oc.may && oc.may.length > 0) html += '<div style="margin-bottom:8px;"><strong>MAY:</strong><div>' + badgeList(oc.may) + '</div></div>';
-                html += '<details style="margin-top:10px;">' +
-                    '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
-                    '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + oc.raw + '</pre>' +
-                    '</details></div>';
-            });
-        } else if (type === 'attributeTypes') {
-            document.getElementById('schema-attr').value = 'olcAttributeTypes';
-            currentSchemaData.attributeTypes.forEach(at => {
-                html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
-                    '<h3 style="margin-top:0;color:#10b981;">' + (at.name || 'Unnamed') + '</h3>' +
-                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + at.dn + '</div>' +
-                    '<div style="margin-bottom:8px;">' +
-                        (at.oid ? '<span class="type-badge">OID ' + at.oid + '</span>' : '') +
-                        (at.singleValue ? '<span class="type-badge">SINGLE-VALUE</span>' : '') +
-                    '</div>';
-                if (at.aliases && at.aliases.length > 1) html += '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + badgeList(at.aliases.slice(1)) + '</div>';
-                if (at.desc) html += '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + at.desc + '</div>';
-                if (at.syntax) html += '<div style="margin-bottom:8px;"><strong>Syntax:</strong> <span class="type-badge" style="font-family:monospace;">' + at.syntax + '</span></div>';
-                html += '<details style="margin-top:10px;">' +
-                    '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
-                    '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + at.raw + '</pre>' +
-                    '</details></div>';
-            });
-        }
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = '<div style="color:#ef4444;">Failed to load schema: ' + e.message + '</div>';
+function applySchemaEditState() {
+    const root = document.getElementById('schema-fragment-root');
+    const canEdit = !!(root && root.dataset.canEdit === 'true');
+    if (canEdit || (tempAdminDN && tempAdminPwd)) {
+        document.getElementById('schema-add-form').style.display = 'block';
+        document.getElementById('schema-admin-login').style.display = 'none';
+    } else {
+        document.getElementById('schema-add-form').style.display = 'none';
+        document.getElementById('schema-admin-login').style.display = 'block';
+    }
+    if (root && root.dataset.schemaAttr) {
+        document.getElementById('schema-attr').value = root.dataset.schemaAttr;
     }
 }
+
+document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target && evt.target.id === 'schema-content') {
+        applySchemaEditState();
+    }
+});
 
 async function addSchemaItem() {
     const dn = document.getElementById('schema-dn').value;
