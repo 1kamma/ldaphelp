@@ -1846,8 +1846,8 @@ const browseHTML = `<!doctype html>
         tbody.innerHTML = '';
 
         const attrs = Object.keys(data).sort();
-        const currentOCs = (Object.keys(data).find(k => k.toLowerCase() === 'objectclass') || null);
-        const isSubschemaEntry = currentOCs && (data[currentOCs] || []).some(v => String(v).toLowerCase() === 'subschema');
+        const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');
+        const isSubschemaEntry = !!(ocKey && (data[ocKey] || []).some(v => String(v).toLowerCase() === 'subschema'));
         for (const attr of attrs) {
             const tr = document.createElement('tr');
             const tdAttr = document.createElement('td');
@@ -1857,13 +1857,28 @@ const browseHTML = `<!doctype html>
             tdVals.dataset.attr = attr;
 
             if (isSubschemaEntry && ['objectclasses', 'attributetypes'].includes(attr.toLowerCase())) {
-                tdVals.appendChild(renderSubschemaValue(attr, data[attr]));
-            } else {
-                data[attr].forEach((val, idx) => appendAttributeValue(tdVals, attr, val, idx, data[attr].length));
+                continue;
             }
+            data[attr].forEach((val, idx) => appendAttributeValue(tdVals, attr, val, idx, data[attr].length));
             tr.appendChild(tdAttr);
             tr.appendChild(tdVals);
             tbody.appendChild(tr);
+        }
+        if (isSubschemaEntry) {
+            const tr = document.createElement('tr');
+            const tdAttr = document.createElement('td');
+            tdAttr.textContent = 'subschema';
+            const tdVals = document.createElement('td');
+            tdVals.innerHTML = '<div id="subschema-fragment-slot" style="padding:4px 0;">Loading subschema...</div>';
+            tr.appendChild(tdAttr);
+            tr.appendChild(tdVals);
+            tbody.insertBefore(tr, tbody.firstChild);
+            if (window.htmx) {
+                htmx.ajax('GET', '/ui/subschema?dn=' + encodeURIComponent(dn), {
+                    target: '#subschema-fragment-slot',
+                    swap: 'innerHTML'
+                });
+            }
         }
         const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');
         if (ocKey) {
