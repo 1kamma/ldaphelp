@@ -603,13 +603,6 @@ func resolveQuickCreateTemplate(cfg Config, objectName string) (ObjectTemplate, 
 	return ObjectTemplate{}, false
 }
 
-func schemaConnForUI(a *App, w http.ResponseWriter, r *http.Request) (ldapSearchConn, error) {
-	if a.ldapSearchFn != nil {
-		return a.ldapSearchFn(w, r, a.cfg)
-	}
-	return getLDAPConn(w, r, a.cfg)
-}
-
 func (a *App) handleUIQuickCreate(w http.ResponseWriter, r *http.Request) {
 	objectName := strings.TrimSpace(r.URL.Query().Get("name"))
 	if objectName == "" {
@@ -659,91 +652,6 @@ func (a *App) handleUIQuickCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = quickCreateTemplate.Execute(w, data)
-}
-
-type schemaFragmentData struct {
-	CanEdit        bool
-	SchemaAttr     string
-	ObjectClasses  []SchemaClassAttr
-	AttributeTypes []SchemaAttrDef
-}
-
-var schemaObjectClassesTemplate = template.Must(template.New("schema-object-classes").Parse(`
-<div id="schema-fragment-root" data-can-edit="{{if .CanEdit}}true{{else}}false{{end}}" data-schema-attr="olcObjectClasses">
-  {{range .ObjectClasses}}
-    <div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">
-      <h3 style="margin-top:0;color:#3b82f6;">{{if .Name}}{{.Name}}{{else}}unnamed{{end}}</h3>
-      <div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> {{.DN}}</div>
-      <div style="margin-bottom:8px;">
-        <span class="type-badge">{{if .Kind}}{{.Kind}}{{else}}STRUCTURAL{{end}}</span>
-        {{if .OID}}<span class="type-badge">OID {{.OID}}</span>{{end}}
-      </div>
-      {{if gt (len .Aliases) 1}}<div style="margin-bottom:8px;"><strong>Aliases:</strong> {{range $i, $a := .Aliases}}{{if gt $i 0}}<span class="type-badge">{{$a}}</span>{{end}}{{end}}</div>{{end}}
-      {{if .Desc}}<div style="margin-bottom:8px;"><strong>Description:</strong> {{.Desc}}</div>{{end}}
-      {{if .Sup}}<div style="margin-bottom:8px;"><strong>SUP:</strong> {{range .Sup}}<span class="type-badge">{{.}}</span>{{end}}</div>{{end}}
-      {{if .Must}}<div style="margin-bottom:8px;"><strong>MUST:</strong><div>{{range .Must}}<span class="type-badge">{{.}}</span>{{end}}</div></div>{{end}}
-      {{if .May}}<div style="margin-bottom:8px;"><strong>MAY:</strong><div>{{range .May}}<span class="type-badge">{{.}}</span>{{end}}</div></div>{{end}}
-      <details style="margin-top:10px;">
-        <summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>
-        <pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">{{.Raw}}</pre>
-      </details>
-    </div>
-  {{end}}
-</div>
-`))
-
-var schemaAttributeTypesTemplate = template.Must(template.New("schema-attribute-types").Parse(`
-<div id="schema-fragment-root" data-can-edit="{{if .CanEdit}}true{{else}}false{{end}}" data-schema-attr="olcAttributeTypes">
-  {{range .AttributeTypes}}
-    <div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">
-      <h3 style="margin-top:0;color:#10b981;">{{if .Name}}{{.Name}}{{else}}Unnamed{{end}}</h3>
-      <div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> {{.DN}}</div>
-      <div style="margin-bottom:8px;">
-        {{if .OID}}<span class="type-badge">OID {{.OID}}</span>{{end}}
-        {{if .SingleValue}}<span class="type-badge">SINGLE-VALUE</span>{{end}}
-      </div>
-      {{if gt (len .Aliases) 1}}<div style="margin-bottom:8px;"><strong>Aliases:</strong> {{range $i, $a := .Aliases}}{{if gt $i 0}}<span class="type-badge">{{$a}}</span>{{end}}{{end}}</div>{{end}}
-      {{if .Desc}}<div style="margin-bottom:8px;"><strong>Description:</strong> {{.Desc}}</div>{{end}}
-      {{if .Syntax}}<div style="margin-bottom:8px;"><strong>Syntax:</strong> <span class="type-badge" style="font-family:monospace;">{{.Syntax}}</span></div>{{end}}
-      <details style="margin-top:10px;">
-        <summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>
-        <pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">{{.Raw}}</pre>
-      </details>
-    </div>
-  {{end}}
-</div>
-`))
-
-func (a *App) handleUISchemaObjectClasses(w http.ResponseWriter, r *http.Request) {
-	conn, err := schemaConnForUI(a, w, r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	defer conn.Close()
-	data, err := loadSchemaDef(conn)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = schemaObjectClassesTemplate.Execute(w, schemaFragmentData{CanEdit: data.CanEdit, SchemaAttr: "olcObjectClasses", ObjectClasses: data.ObjectClasses})
-}
-
-func (a *App) handleUISchemaAttributeTypes(w http.ResponseWriter, r *http.Request) {
-	conn, err := schemaConnForUI(a, w, r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	defer conn.Close()
-	data, err := loadSchemaDef(conn)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = schemaAttributeTypesTemplate.Execute(w, schemaFragmentData{CanEdit: data.CanEdit, SchemaAttr: "olcAttributeTypes", AttributeTypes: data.AttributeTypes})
 }
 
 type subschemaFragmentData struct {

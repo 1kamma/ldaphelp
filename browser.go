@@ -2581,7 +2581,6 @@ const browseHTML = `<!doctype html>
                 <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
             </div>
         </div>
-<<<<<<< HEAD
         <div class="header-actions" style="margin-bottom:20px; justify-content:flex-start;">
             <button hx-get="/ui/schema/object-classes" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
             <button hx-get="/ui/schema/attribute-types" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>

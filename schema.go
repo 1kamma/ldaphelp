@@ -327,23 +327,6 @@ func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	return schemaDef, nil
-}
-
-func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
-	conn, err := getLDAPConn(w, r, a.cfg)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	defer conn.Close()
-
-	schemaDef, err := loadSchemaDef(conn)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schemaDef)
 }
