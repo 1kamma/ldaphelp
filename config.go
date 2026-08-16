@@ -21,9 +21,19 @@ type ContextMenuAction struct {
 	Action string `yaml:"action" json:"action"`
 }
 
+type EntryTypeActionConfig struct {
+	AddOrganizationalUnit bool `yaml:"add_organizational_unit" json:"add_organizational_unit"`
+	AddCredential         bool `yaml:"add_credential" json:"add_credential"`
+	SetPassword           bool `yaml:"set_password" json:"set_password"`
+	AddToPosixGroup       bool `yaml:"add_to_posix_group" json:"add_to_posix_group"`
+	AddToGroupOfNames     bool `yaml:"add_to_group_of_names" json:"add_to_group_of_names"`
+	AddMembers            bool `yaml:"add_members" json:"add_members"`
+}
+
 type UISettings struct {
-	Theme       string              `yaml:"theme" json:"theme"`
-	ContextMenu []ContextMenuAction `yaml:"context_menu" json:"context_menu"`
+	Theme       string                           `yaml:"theme" json:"theme"`
+	ContextMenu []ContextMenuAction              `yaml:"context_menu" json:"context_menu"`
+	TypeActions map[string]EntryTypeActionConfig `yaml:"type_actions" json:"type_actions"`
 }
 
 type SSOSettings struct {
@@ -84,11 +94,12 @@ type EmbeddedAssetSettings struct {
 }
 
 type Settings struct {
-	SSO          SSOSettings               `yaml:"sso" json:"sso"`
-	UI           UISettings                `yaml:"ui" json:"ui"`
-	Objects      map[string]ObjectTemplate `yaml:"objects" json:"objects"`
-	DefaultGroup string                    `yaml:"default_group" json:"default_group"`
-	Session      SessionSettings           `yaml:"session" json:"session"`
+	SSO              SSOSettings               `yaml:"sso" json:"sso"`
+	UI               UISettings                `yaml:"ui" json:"ui"`
+	Objects          map[string]ObjectTemplate `yaml:"objects" json:"objects"`
+	DefaultGroup     string                    `yaml:"default_group" json:"default_group"`
+	DefaultGIDNumber string                    `yaml:"default_gid_number" json:"default_gid_number"`
+	Session          SessionSettings           `yaml:"session" json:"session"`
 
 	// New: controls whether logo/favicon are embedded (served from DB) or redirected (external URL)
 	Assets EmbeddedAssetSettings `yaml:"assets" json:"assets"`
@@ -152,6 +163,31 @@ func LoadConfig(path string) (Config, error) {
 							{Name: "Action 1", Action: "alert('Action 1')"},
 							{Name: "Action 2", Action: "alert('Action 2')"},
 						},
+						TypeActions: map[string]EntryTypeActionConfig{
+							"domain":             {AddOrganizationalUnit: true},
+							"organization":       {AddOrganizationalUnit: true},
+							"organizationalunit": {AddOrganizationalUnit: true},
+							"inetorgperson": {
+								AddCredential:     true,
+								SetPassword:       true,
+								AddToPosixGroup:   true,
+								AddToGroupOfNames: true,
+							},
+							"person": {
+								AddCredential:     true,
+								SetPassword:       true,
+								AddToPosixGroup:   true,
+								AddToGroupOfNames: true,
+							},
+							"posixaccount": {
+								AddCredential:     true,
+								SetPassword:       true,
+								AddToPosixGroup:   true,
+								AddToGroupOfNames: true,
+							},
+							"posixgroup":   {AddMembers: true},
+							"groupofnames": {AddMembers: true},
+						},
 					},
 					Objects: map[string]ObjectTemplate{
 						"inetOrgPerson": {
@@ -160,6 +196,7 @@ func LoadConfig(path string) (Config, error) {
 							PinQuickCreate:  true,
 						},
 					},
+					DefaultGIDNumber: "1000",
 					Assets: EmbeddedAssetSettings{
 						Logo:    "",
 						Favicon: "",
@@ -184,6 +221,36 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Settings.UI.Theme == "" {
 		cfg.Settings.UI.Theme = "dark"
 	}
+	if cfg.Settings.DefaultGIDNumber == "" {
+		cfg.Settings.DefaultGIDNumber = "1000"
+	}
+	if cfg.Settings.UI.TypeActions == nil {
+		cfg.Settings.UI.TypeActions = map[string]EntryTypeActionConfig{
+			"domain":             {AddOrganizationalUnit: true},
+			"organization":       {AddOrganizationalUnit: true},
+			"organizationalunit": {AddOrganizationalUnit: true},
+			"inetorgperson": {
+				AddCredential:     true,
+				SetPassword:       true,
+				AddToPosixGroup:   true,
+				AddToGroupOfNames: true,
+			},
+			"person": {
+				AddCredential:     true,
+				SetPassword:       true,
+				AddToPosixGroup:   true,
+				AddToGroupOfNames: true,
+			},
+			"posixaccount": {
+				AddCredential:     true,
+				SetPassword:       true,
+				AddToPosixGroup:   true,
+				AddToGroupOfNames: true,
+			},
+			"posixgroup":   {AddMembers: true},
+			"groupofnames": {AddMembers: true},
+		}
+	}
 	cfg.Server.Joined = strings.Join([]string{cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)}, ":")
 	dbSettings, errDb := LoadSettingsFromDB()
 	if errDb == nil && (dbSettings.UI.Theme != "" || len(dbSettings.Objects) > 0) {
@@ -206,9 +273,17 @@ func LoadConfig(path string) (Config, error) {
 		if len(yamlSettings.UI.ContextMenu) > 0 {
 			merged.UI.ContextMenu = yamlSettings.UI.ContextMenu
 		}
+		if len(yamlSettings.UI.TypeActions) > 0 {
+			if len(merged.UI.TypeActions) == 0 {
+				merged.UI.TypeActions = map[string]EntryTypeActionConfig{}
+			}
+			for k, v := range yamlSettings.UI.TypeActions {
+				merged.UI.TypeActions[k] = v
+			}
+		}
 
 		// ---- Objects ----
-		if yamlSettings.Objects != nil && len(yamlSettings.Objects) > 0 {
+		if len(yamlSettings.Objects) > 0 {
 			if merged.Objects == nil {
 				merged.Objects = map[string]ObjectTemplate{}
 			}
@@ -217,9 +292,12 @@ func LoadConfig(path string) (Config, error) {
 			}
 		}
 
-		// ---- DefaultGroup ----
+		// ---- DefaultGroup / DefaultGIDNumber ----
 		if strings.TrimSpace(yamlSettings.DefaultGroup) != "" {
 			merged.DefaultGroup = yamlSettings.DefaultGroup
+		}
+		if strings.TrimSpace(yamlSettings.DefaultGIDNumber) != "" {
+			merged.DefaultGIDNumber = yamlSettings.DefaultGIDNumber
 		}
 
 		// ---- Session ----

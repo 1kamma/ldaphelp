@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,10 +13,14 @@ import (
 )
 
 type SchemaClass struct {
-	Name string
-	Sup  []string
-	Must []string
-	May  []string
+	OID     string
+	Name    string
+	Aliases []string
+	Desc    string
+	Kind    string
+	Sup     []string
+	Must    []string
+	May     []string
 }
 
 func parseList(s string) []string {
@@ -34,43 +39,57 @@ func parseList(s string) []string {
 	return res
 }
 
+func parseNames(def string) []string {
+	reNamesList := regexp.MustCompile(`NAME\s+\(([^)]+)\)`)
+	reSingleName := regexp.MustCompile(`NAME\s+'([^']+)'`)
+	if m := reNamesList.FindStringSubmatch(def); len(m) > 1 {
+		reQuoted := regexp.MustCompile(`'([^']+)'`)
+		parts := reQuoted.FindAllStringSubmatch(m[1], -1)
+		var names []string
+		for _, part := range parts {
+			if len(part) > 1 {
+				names = append(names, strings.ToLower(strings.TrimSpace(part[1])))
+			}
+		}
+		return names
+	}
+	if m := reSingleName.FindStringSubmatch(def); len(m) > 1 {
+		return []string{strings.ToLower(strings.TrimSpace(m[1]))}
+	}
+	return nil
+}
+
 func parseObjectClass(oc string) *SchemaClass {
-	reName := regexp.MustCompile(`NAME\s+(?:\(\s*'([^']+)'|'([^']+)'|([a-zA-Z0-9_-]+))`)
+	reOID := regexp.MustCompile(`^\(\s*([0-9.]+)`)
 	reSup := regexp.MustCompile(`SUP\s+([a-zA-Z0-9_-]+|\([^)]+\))`)
 	reMust := regexp.MustCompile(`MUST\s+([a-zA-Z0-9_-]+|\([^)]+\))`)
 	reMay := regexp.MustCompile(`MAY\s+([a-zA-Z0-9_-]+|\([^)]+\))`)
+	reDesc := regexp.MustCompile(`DESC\s+'([^']+)'`)
 
-	c := &SchemaClass{}
-
-	mName := reName.FindStringSubmatch(oc)
-	if len(mName) > 3 {
-		if mName[1] != "" {
-			c.Name = strings.ToLower(mName[1])
-		} else if mName[2] != "" {
-			c.Name = strings.ToLower(mName[2])
-		} else {
-			c.Name = strings.ToLower(mName[3])
-		}
-	} else {
-		// Try fallback name parse
-		parts := strings.Fields(oc)
-		if len(parts) > 3 && parts[2] == "NAME" {
-			c.Name = strings.ToLower(strings.Trim(parts[3], "'"))
-		}
+	c := &SchemaClass{Kind: "STRUCTURAL"}
+	if m := reOID.FindStringSubmatch(oc); len(m) > 1 {
+		c.OID = strings.TrimSpace(m[1])
+	}
+	c.Aliases = parseNames(oc)
+	if len(c.Aliases) > 0 {
+		c.Name = c.Aliases[0]
+	}
+	if m := reDesc.FindStringSubmatch(oc); len(m) > 1 {
+		c.Desc = strings.TrimSpace(m[1])
+	}
+	if strings.Contains(oc, " AUXILIARY") {
+		c.Kind = "AUXILIARY"
+	} else if strings.Contains(oc, " ABSTRACT") {
+		c.Kind = "ABSTRACT"
 	}
 
-	mSup := reSup.FindStringSubmatch(oc)
-	if len(mSup) > 1 {
+	if mSup := reSup.FindStringSubmatch(oc); len(mSup) > 1 {
 		c.Sup = parseList(mSup[1])
 	}
-
-	mMust := reMust.FindStringSubmatch(oc)
-	if len(mMust) > 1 {
+	if mMust := reMust.FindStringSubmatch(oc); len(mMust) > 1 {
 		c.Must = parseList(mMust[1])
 	}
-
-	mMay := reMay.FindStringSubmatch(oc)
-	if len(mMay) > 1 {
+	if mMay := reMay.FindStringSubmatch(oc); len(mMay) > 1 {
 		c.May = parseList(mMay[1])
 	}
 
@@ -152,6 +171,10 @@ func getResolvedSchema(conn *ldap.Conn, targetClasses []string) (classes []strin
 		finalClasses = append(finalClasses, c)
 	}
 
+	sort.Strings(finalClasses)
+	sort.Strings(finalMust)
+	sort.Strings(finalMay)
+
 	return finalClasses, finalMust, finalMay, nil
 }
 
@@ -191,37 +214,41 @@ type SchemaDef struct {
 }
 
 type SchemaClassAttr struct {
-	Raw  string   `json:"raw"`
-	DN   string   `json:"dn"`
-	Name string   `json:"name"`
-	Sup  []string `json:"sup"`
-	Must []string `json:"must"`
-	May  []string `json:"may"`
+	Raw     string   `json:"raw"`
+	DN      string   `json:"dn"`
+	OID     string   `json:"oid"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases"`
+	Desc    string   `json:"desc"`
+	Kind    string   `json:"kind"`
+	Sup     []string `json:"sup"`
+	Must    []string `json:"must"`
+	May     []string `json:"may"`
 }
 
 type SchemaAttrDef struct {
-	Raw    string `json:"raw"`
-	DN     string `json:"dn"`
-	Name   string `json:"name"`
-	Syntax string `json:"syntax"`
-	Desc   string `json:"desc"`
+	Raw         string   `json:"raw"`
+	DN          string   `json:"dn"`
+	OID         string   `json:"oid"`
+	Name        string   `json:"name"`
+	Aliases     []string `json:"aliases"`
+	Syntax      string   `json:"syntax"`
+	Desc        string   `json:"desc"`
+	SingleValue bool     `json:"singleValue"`
 }
 
 func parseAttributeType(at string) *SchemaAttrDef {
-	reName := regexp.MustCompile(`NAME\s+(?:\(\s*'([^']+)'|'([^']+)'|([a-zA-Z0-9_-]+))`)
+	reOID := regexp.MustCompile(`^\(\s*([0-9.]+)`)
 	reSyntax := regexp.MustCompile(`SYNTAX\s+([0-9.]+(?:\{\d+\})?)`)
 	reDesc := regexp.MustCompile(`DESC\s+'([^']+)'`)
 
 	def := &SchemaAttrDef{Raw: at}
-
-	if m := reName.FindStringSubmatch(at); len(m) > 0 {
-		if m[1] != "" {
-			def.Name = m[1]
-		} else if m[2] != "" {
-			def.Name = m[2]
-		} else {
-			def.Name = m[3]
-		}
+	if m := reOID.FindStringSubmatch(at); len(m) > 1 {
+		def.OID = strings.TrimSpace(m[1])
+	}
+	def.Aliases = parseNames(at)
+	if len(def.Aliases) > 0 {
+		def.Name = def.Aliases[0]
 	}
 	if m := reSyntax.FindStringSubmatch(at); len(m) > 1 {
 		def.Syntax = m[1]
@@ -229,6 +256,7 @@ func parseAttributeType(at string) *SchemaAttrDef {
 	if m := reDesc.FindStringSubmatch(at); len(m) > 1 {
 		def.Desc = m[1]
 	}
+	def.SingleValue = strings.Contains(at, " SINGLE-VALUE")
 
 	syntaxMap := map[string]string{
 		"1.3.6.1.4.1.1466.115.121.1.15": "Directory String",
@@ -274,7 +302,7 @@ func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request)
 		for _, ocStr := range entry.GetAttributeValues("olcObjectClasses") {
 			c := parseObjectClass(ocStr)
 			schemaDef.ObjectClasses = append(schemaDef.ObjectClasses, SchemaClassAttr{
-				Raw: ocStr, DN: entry.DN, Name: c.Name, Sup: c.Sup, Must: c.Must, May: c.May,
+				Raw: ocStr, DN: entry.DN, OID: c.OID, Name: c.Name, Aliases: c.Aliases, Desc: c.Desc, Kind: c.Kind, Sup: c.Sup, Must: c.Must, May: c.May,
 			})
 		}
 		for _, atStr := range entry.GetAttributeValues("olcAttributeTypes") {
@@ -283,6 +311,13 @@ func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request)
 			schemaDef.AttributeTypes = append(schemaDef.AttributeTypes, *def)
 		}
 	}
+
+	sort.Slice(schemaDef.ObjectClasses, func(i, j int) bool {
+		return schemaDef.ObjectClasses[i].Name < schemaDef.ObjectClasses[j].Name
+	})
+	sort.Slice(schemaDef.AttributeTypes, func(i, j int) bool {
+		return schemaDef.AttributeTypes[i].Name < schemaDef.AttributeTypes[j].Name
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schemaDef)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"log/slog"
 
@@ -306,9 +308,45 @@ func (a *App) handleApiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(s.DefaultGIDNumber) == "" {
+		s.DefaultGIDNumber = "1000"
+	}
+	if s.UI.TypeActions == nil {
+		s.UI.TypeActions = a.cfg.Settings.UI.TypeActions
+	}
 	a.cfg.Settings = s
 	SaveSettingsToDB(s)
 	w.WriteHeader(http.StatusOK)
+}
+
+func isBinaryAttributeValue(attrName string, raw []byte) bool {
+	lower := strings.ToLower(strings.TrimSpace(attrName))
+	switch lower {
+	case "jpegphoto", "photo", "thumbnailphoto", "usercertificate", "usersmimecertificate", "objectsid", "objectguid", "audio", "binary":
+		return true
+	}
+	if len(raw) == 0 {
+		return false
+	}
+	if !utf8.Valid(raw) {
+		return true
+	}
+	for _, b := range raw {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeBinaryAttributeValue(attrName string, raw []byte) string {
+	contentType := http.DetectContentType(raw)
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	lower := strings.ToLower(strings.TrimSpace(attrName))
+	if strings.Contains(lower, "photo") || strings.HasPrefix(contentType, "image/") {
+		return "data:" + contentType + ";base64," + encoded
+	}
+	return "base64:" + encoded
 }
 
 func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +372,24 @@ func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
 
 	attrs := make(map[string][]string)
 	for _, attr := range res.Entries[0].Attributes {
-		attrs[attr.Name] = attr.Values
+		if len(attr.ByteValues) == 0 {
+			attrs[attr.Name] = attr.Values
+			continue
+		}
+
+		vals := make([]string, 0, len(attr.ByteValues))
+		for i, raw := range attr.ByteValues {
+			if isBinaryAttributeValue(attr.Name, raw) {
+				vals = append(vals, encodeBinaryAttributeValue(attr.Name, raw))
+				continue
+			}
+			if i < len(attr.Values) && attr.Values[i] != "" {
+				vals = append(vals, attr.Values[i])
+			} else {
+				vals = append(vals, string(raw))
+			}
+		}
+		attrs[attr.Name] = vals
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -343,10 +398,11 @@ func (a *App) handleApiEntry(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DN      string              `json:"dn"`
-		Replace map[string][]string `json:"replace"`
-		Add     map[string][]string `json:"add"`
-		Delete  []string            `json:"delete"`
+		DN           string              `json:"dn"`
+		Replace      map[string][]string `json:"replace"`
+		Add          map[string][]string `json:"add"`
+		Delete       []string            `json:"delete"`
+		DeleteValues map[string][]string `json:"delete_values"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -369,6 +425,9 @@ func (a *App) handleApiModify(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, k := range req.Delete {
 		modReq.Delete(k, nil)
+	}
+	for k, v := range req.DeleteValues {
+		modReq.Delete(k, v)
 	}
 	if err := conn.Modify(modReq); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -454,8 +513,13 @@ func (a *App) handleApiDefaultGid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(a.cfg.Settings.DefaultGIDNumber) != "" {
+		w.Write([]byte(strings.TrimSpace(a.cfg.Settings.DefaultGIDNumber)))
+		return
+	}
+
 	if a.cfg.Settings.DefaultGroup == "" {
-		w.Write([]byte(""))
+		w.Write([]byte("1000"))
 		return
 	}
 
@@ -475,11 +539,14 @@ func (a *App) handleApiDefaultGid(w http.ResponseWriter, r *http.Request) {
 
 	res, err := conn.Search(searchReq)
 	if err != nil || len(res.Entries) == 0 {
-		w.Write([]byte(""))
+		w.Write([]byte("1000"))
 		return
 	}
 
-	gid := res.Entries[0].GetAttributeValue("gidNumber")
+	gid := strings.TrimSpace(res.Entries[0].GetAttributeValue("gidNumber"))
+	if gid == "" {
+		gid = "1000"
+	}
 	w.Write([]byte(gid))
 }
 
@@ -572,7 +639,7 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 			req.Attributes["uidNumber"] = []string{getNextID(conn, bases, "uidNumber")}
 		}
 		if len(req.Attributes["gidNumber"]) == 0 || req.Attributes["gidNumber"][0] == "" {
-			req.Attributes["gidNumber"] = req.Attributes["uidNumber"]
+			delete(req.Attributes, "gidNumber")
 		}
 		if len(req.Attributes["homeDirectory"]) == 0 || req.Attributes["homeDirectory"][0] == "" {
 			if len(req.Attributes["uid"]) > 0 {
@@ -582,7 +649,7 @@ func (a *App) handleApiCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasPosixGroup {
 		if len(req.Attributes["gidNumber"]) == 0 || req.Attributes["gidNumber"][0] == "" {
-			req.Attributes["gidNumber"] = []string{getNextID(conn, bases, "gidNumber")}
+			delete(req.Attributes, "gidNumber")
 		}
 	}
 	addReq := ldap.NewAddRequest(req.DN, nil)
@@ -979,8 +1046,13 @@ const browseHTML = `<!doctype html>
     .cm-item { padding: 8px 15px; cursor: pointer; color: var(--text); font-size: 14px; }
     .cm-item:hover { background: var(--hover); }
     #settings-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center; }
-    .modal-content { background: var(--sidebar-bg); padding: 20px; border-radius: 6px; width: 400px; color: var(--text); border: 1px solid var(--border); }
+    .modal-content { background: var(--sidebar-bg); padding: 20px; border-radius: 6px; width: 400px; color: var(--text); border: 1px solid var(--border); box-sizing: border-box; }
+    .modal-scroll-shell { display: flex; flex-direction: column; max-height: 80vh; overflow: hidden; }
+    .modal-scroll-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .modal-actions { text-align: right; margin-top: 15px; }
+    .form-help { margin: 4px 0 10px 0; color: #9ca3af; font-size: 12px; line-height: 1.4; }
+    .type-badge { display:inline-block; margin-right:6px; margin-bottom:6px; padding:2px 8px; border-radius:999px; background: var(--hover); font-size:12px; }
+    .image-preview { display:block; margin-top:8px; max-width:320px; max-height:240px; border:1px solid var(--border); border-radius:6px; }
   </style>
 </head>
 <body>
@@ -1060,10 +1132,12 @@ const browseHTML = `<!doctype html>
   </div>
 
   <div id="group-select-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content" style="max-height: 80vh; overflow-y: auto;">
-      <h3 id="group-select-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Select Group</h3>
-      <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; max-height: 300px; overflow-y: hidden;"></div>
-      <div class="modal-actions">
+    <div class="modal-content modal-scroll-shell" style="width: 520px;">
+      <div class="modal-scroll-body">
+        <h3 id="group-select-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Select Group</h3>
+        <div id="group-select-list" style="margin-top: 15px; margin-bottom: 15px; min-height: 120px; overflow-y: auto;"></div>
+      </div>
+      <div class="modal-actions" style="flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 0;">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('group-select-modal').style.display='none'">Cancel</button>
       </div>
     </div>
@@ -1073,13 +1147,24 @@ const browseHTML = `<!doctype html>
     <div class="modal-content" style="max-height: 80vh; overflow-y: auto; width: 600px;">
       <h3>Settings</h3>
 
-      <h4>Theme & Context Menu (JSON)</h4>
+      <h4>Theme & Custom Context Menu (JSON)</h4>
+      <div class="form-help">Use this for theme selection and optional custom actions that should appear in addition to the built-in type-aware menu.</div>
       <textarea id="settings-ui-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
 
       <h4>Quick Create Objects (JSON)</h4>
+      <div class="form-help">Configure which object types appear in Quick Create and which attribute builds the DN.</div>
       <textarea id="settings-objects-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
 
-      <h4>Default posixGroup DN (for gidNumber)</h4>
+      <h4>Entry Type Actions (JSON)</h4>
+      <div class="form-help">Map object classes to right-click capabilities like adding members or setting passwords.</div>
+      <textarea id="settings-type-actions-json" rows="8" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
+
+      <h4>Default gidNumber</h4>
+      <div class="form-help">Used as the default value for new posixAccount and posixGroup entries. Defaults to 1000.</div>
+      <input type="text" id="settings-default-gid-number" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
+
+      <h4>Default posixGroup DN (optional fallback source)</h4>
+      <div class="form-help">If set and no explicit default gidNumber is configured, LDAP Help can read the group's gidNumber from this DN.</div>
       <input type="text" id="settings-default-group" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
 
       <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
@@ -1185,11 +1270,51 @@ const browseHTML = `<!doctype html>
         }
     }
 
+    function getTypeActionDefaults() {
+        return {
+            domain: { add_organizational_unit: true },
+            organization: { add_organizational_unit: true },
+            organizationalunit: { add_organizational_unit: true },
+            inetorgperson: {
+                add_credential: true,
+                set_password: true,
+                add_to_posix_group: true,
+                add_to_group_of_names: true,
+            },
+            person: {
+                add_credential: true,
+                set_password: true,
+                add_to_posix_group: true,
+                add_to_group_of_names: true,
+            },
+            posixaccount: {
+                add_credential: true,
+                set_password: true,
+                add_to_posix_group: true,
+                add_to_group_of_names: true,
+            },
+            posixgroup: { add_members: true },
+            groupofnames: { add_members: true },
+        };
+    }
+
+    function resolveTypeActions(ocs) {
+        const classes = (ocs || []).map(c => c.toLowerCase());
+        const configured = (settings && settings.ui && settings.ui.type_actions) || {};
+        const merged = {};
+        const defaults = getTypeActionDefaults();
+        classes.forEach(cls => {
+            if (defaults[cls]) Object.assign(merged, defaults[cls]);
+            if (configured[cls]) Object.assign(merged, configured[cls]);
+        });
+        return merged;
+    }
+
     function getIcon(ocs) {
         if (!ocs) return '📄';
         const classes = ocs.map(c => c.toLowerCase());
+        if (classes.includes('posixaccount')) return '🐧';
         if (classes.includes('inetorgperson')) return '🪪';
-        if (classes.includes('posixaccount')) return '🧑‍💻';
         if (classes.includes('person') || classes.includes('user')) return '👤';
         if (classes.includes('groupofnames')) return '🗂️';
         if (classes.includes('posixgroup')) return '👥';
@@ -1200,6 +1325,37 @@ const browseHTML = `<!doctype html>
         if (classes.includes('monitor')) return '📊';
         if (classes.includes('computer') || classes.includes('device')) return '💻';
         return '📄';
+    }
+
+    function updateTreeNodeAppearance(dn, objectClasses) {
+        document.querySelectorAll('.tree-node').forEach(node => {
+            if (node.dataset.dn !== dn) return;
+            if (node._nodeData) {
+                node._nodeData.objectClasses = objectClasses;
+            }
+            const icon = node.querySelector('.item-icon');
+            if (icon) {
+                icon.textContent = getIcon(objectClasses) + ' ';
+            }
+        });
+    }
+
+    function showContextMenuAt(x, y, items) {
+        const cm = document.getElementById('context-menu');
+        cm.innerHTML = '';
+        (items || []).forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'cm-item';
+            div.textContent = item.name;
+            div.onclick = () => {
+                cm.style.display = 'none';
+                item.action();
+            };
+            cm.appendChild(div);
+        });
+        cm.style.display = items && items.length ? 'block' : 'none';
+        cm.style.left = x + 'px';
+        cm.style.top = y + 'px';
     }
 
     async function loadRoots() {
@@ -1296,6 +1452,8 @@ const browseHTML = `<!doctype html>
     function createNode(nodeData) {
         const li = document.createElement('li');
         li.className = 'tree-node';
+        li.dataset.dn = nodeData.dn;
+        li._nodeData = nodeData;
 
         const expander = document.createElement('span');
 
@@ -1350,6 +1508,7 @@ const browseHTML = `<!doctype html>
         expander.textContent = nodeData.hasChildren ? '▶' : ' ';
 
         const icon = document.createElement('span');
+        icon.className = 'item-icon';
         icon.textContent = getIcon(nodeData.objectClasses) + ' ';
 
         const text = document.createElement('span');
@@ -1362,46 +1521,43 @@ const browseHTML = `<!doctype html>
         };
         text.oncontextmenu = (e) => {
             e.preventDefault();
-            const cm = document.getElementById('context-menu');
-            cm.innerHTML = '';
+            const actions = [];
 
             if (settings && settings.ui && settings.ui.context_menu) {
                 settings.ui.context_menu.forEach(item => {
-                    const div = document.createElement('div');
-                    div.className = 'cm-item';
-                    div.textContent = item.name;
-                    div.onclick = new Function('dn', item.action).bind(null, nodeData.dn);
-                    cm.appendChild(div);
+                    actions.push({
+                        name: item.name,
+                        action: () => new Function('dn', item.action).bind(null, nodeData.dn)(),
+                    });
                 });
             }
 
-            const ocs = (nodeData.objectClasses || []).map(c => c.toLowerCase());
-            const addAction = (name, fn) => {
-                const div = document.createElement('div');
-                div.className = 'cm-item';
-                div.textContent = name;
-                div.onclick = fn;
-                cm.appendChild(div);
-            };
-
-            addAction('Add OrganizationalUnit', () => alert('Add OU under ' + nodeData.dn));
-            addAction('Add Credential', () => showAddCredentialModal(nodeData.dn));
-
-            if (ocs.includes('person') || ocs.includes('inetorgperson') || ocs.includes('posixaccount')) {
-                addAction('Set Password', () => setPassword(nodeData.dn));
-                addAction('Add to posixGroup', () => showGroupSelector('posixGroup', nodeData.dn));
-                addAction('Add to groupOfNames', () => showGroupSelector('groupOfNames', nodeData.dn));
+            const typeActions = resolveTypeActions(nodeData.objectClasses || []);
+            if (typeActions.add_organizational_unit) {
+                actions.push({ name: 'Add OrganizationalUnit', action: () => alert('Add OU under ' + nodeData.dn) });
             }
-            if (ocs.includes('posixgroup')) {
-                addAction('Add members', () => showMemberSelector('posixGroup', nodeData.dn));
+            if (typeActions.add_credential) {
+                actions.push({ name: 'Add Credential', action: () => showAddCredentialModal(nodeData.dn) });
             }
-            if (ocs.includes('groupofnames')) {
-                addAction('Add members', () => showMemberSelector('groupOfNames', nodeData.dn));
+            if (typeActions.set_password) {
+                actions.push({ name: 'Set Password', action: () => setPassword(nodeData.dn) });
+            }
+            if (typeActions.add_to_posix_group) {
+                actions.push({ name: 'Add to posixGroup', action: () => showGroupSelector('posixGroup', nodeData.dn) });
+            }
+            if (typeActions.add_to_group_of_names) {
+                actions.push({ name: 'Add to groupOfNames', action: () => showGroupSelector('groupOfNames', nodeData.dn) });
+            }
+            if (typeActions.add_members) {
+                if ((nodeData.objectClasses || []).some(c => c.toLowerCase() === 'posixgroup')) {
+                    actions.push({ name: 'Add members', action: () => showMemberSelector('posixGroup', nodeData.dn) });
+                }
+                if ((nodeData.objectClasses || []).some(c => c.toLowerCase() === 'groupofnames')) {
+                    actions.push({ name: 'Add members', action: () => showMemberSelector('groupOfNames', nodeData.dn) });
+                }
             }
 
-            cm.style.display = 'block';
-            cm.style.left = e.pageX + 'px';
-            cm.style.top = e.pageY + 'px';
+            showContextMenuAt(e.pageX, e.pageY, actions);
         };
 
         const childrenUl = document.createElement('ul');
@@ -1524,15 +1680,63 @@ const browseHTML = `<!doctype html>
         return formatDateTimeInTimeZone(parsed, serverTimeZone);
     }
 
-    function appendAttributeValue(container, value, idx, totalValues) {
-        if (typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9-]*=[^,]+,.*=/.test(value)) {
+    function isImageValue(value) {
+        return typeof value === 'string' && value.startsWith('data:image/');
+    }
+
+    function isBase64BinaryValue(value) {
+        return typeof value === 'string' && value.startsWith('base64:');
+    }
+
+    function isBinaryDisplayValue(value) {
+        return isImageValue(value) || isBase64BinaryValue(value);
+    }
+
+    function appendAttributeValue(container, attrName, value, idx, totalValues) {
+        const attrLower = (attrName || '').toLowerCase();
+        if (isImageValue(value)) {
+            const link = document.createElement('a');
+            link.href = value;
+            link.target = '_blank';
+            link.textContent = 'View image';
+            link.style.color = '#3b82f6';
+            link.style.textDecoration = 'none';
+            container.appendChild(link);
+
+            const img = document.createElement('img');
+            img.src = value;
+            img.alt = attrName;
+            img.className = 'image-preview';
+            container.appendChild(img);
+        } else if (isBase64BinaryValue(value)) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.textContent = 'Binary value (base64)';
+            details.appendChild(summary);
+            const code = document.createElement('code');
+            code.textContent = value.slice('base64:'.length);
+            code.style.display = 'block';
+            code.style.whiteSpace = 'pre-wrap';
+            code.style.wordBreak = 'break-all';
+            code.style.marginTop = '6px';
+            details.appendChild(code);
+            container.appendChild(details);
+        } else if (typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9-]*=[^,]+,.*=/.test(value)) {
             const a = document.createElement('a');
             a.textContent = value.split(',')[0];
             a.title = value;
-            a.href = "#";
+            a.href = '#';
             a.onclick = (e) => { e.preventDefault(); loadEntry(value); };
-            a.style.color = "#3b82f6";
-            a.style.textDecoration = "none";
+            a.oncontextmenu = (e) => {
+                if (attrLower !== 'memberof') return;
+                e.preventDefault();
+                showContextMenuAt(e.pageX, e.pageY, [{
+                    name: 'Remove from group',
+                    action: () => removeMembership(value),
+                }]);
+            };
+            a.style.color = '#3b82f6';
+            a.style.textDecoration = 'none';
             container.appendChild(a);
         } else {
             container.appendChild(document.createTextNode(formatAttributeValueForDisplay(value)));
@@ -1579,10 +1783,14 @@ const browseHTML = `<!doctype html>
             tdVals.className = 'val-cell';
             tdVals.dataset.attr = attr;
 
-            data[attr].forEach((val, idx) => appendAttributeValue(tdVals, val, idx, data[attr].length));
+            data[attr].forEach((val, idx) => appendAttributeValue(tdVals, attr, val, idx, data[attr].length));
             tr.appendChild(tdAttr);
             tr.appendChild(tdVals);
             tbody.appendChild(tr);
+        }
+        const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');
+        if (ocKey) {
+            updateTreeNodeAppearance(dn, data[ocKey]);
         }
         document.getElementById('entry-attrs').style.display = 'table';
         document.getElementById('add-attr-panel').style.display = 'none';
@@ -1642,14 +1850,8 @@ const browseHTML = `<!doctype html>
                 }
             } else if (attr.toLowerCase() === 'gidnumber') {
                 const defGidRes = await fetch('/api/default_gid');
-                const defGid = await defGidRes.text();
-                if (defGid) {
-                    input.value = defGid;
-                } else {
-                    const nextIdRes = await fetch('/api/next_id?attr=gidNumber');
-                    if (nextIdRes.ok) {
-                        input.value = await nextIdRes.text();
-                    }
+                if (defGidRes.ok) {
+                    input.value = await defGidRes.text();
                 }
             } else if (attr.toLowerCase() === 'uid') {
                 const cnKey = Object.keys(currentEntryData).find(k => k.toLowerCase() === 'cn');
@@ -1696,6 +1898,8 @@ const browseHTML = `<!doctype html>
 
         if (res.ok) {
             document.getElementById('add-oc-panel').style.display = 'none';
+            document.getElementById('tree-root').innerHTML = '';
+            loadRoots();
             loadEntry(currentEntryDN);
         } else {
             alert("Failed to add object class: " + await res.text());
@@ -1711,6 +1915,7 @@ const browseHTML = `<!doctype html>
         const schema = await res.json();
         const sel = document.getElementById('add-attr-select');
         sel.innerHTML = '';
+        document.getElementById('add-attr-val').value = '';
         const existing = Object.keys(currentEntryData).map(k => k.toLowerCase());
         const available = [...(schema.must||[]), ...(schema.may||[])].filter(a => !existing.includes(a.toLowerCase()));
         available.sort().forEach(a => {
@@ -1735,6 +1940,7 @@ const browseHTML = `<!doctype html>
 
         if (res.ok) {
             isEditing = false;
+            document.getElementById('add-attr-val').value = '';
             loadEntry(currentEntryDN);
             document.getElementById('add-attr-panel').style.display = 'none';
         } else {
@@ -1759,12 +1965,16 @@ const browseHTML = `<!doctype html>
                     cell.style.opacity = '0.5';
                     return;
                 }
+                if (currentEntryData[attr].some(isBinaryDisplayValue)) {
+                    cell.style.opacity = '0.5';
+                    return;
+                }
                 const val = currentEntryData[attr].join('\n'); const rows = Math.max(1, currentEntryData[attr].length);
                 cell.innerHTML = '<textarea style="width:80%; box-sizing:border-box; padding:4px; vertical-align:top;" rows="' + rows + '">' + val.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</textarea><button onclick="deleteAttr(\'' + attr + '\')" style="margin-left:5px; background:#dc2626; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">X</button>';
             } else {
                 cell.style.opacity = '1';
                 cell.innerHTML = '';
-                currentEntryData[attr].forEach((val, idx) => appendAttributeValue(cell, val, idx, currentEntryData[attr].length));
+                currentEntryData[attr].forEach((val, idx) => appendAttributeValue(cell, attr, val, idx, currentEntryData[attr].length));
             }
         });
     }
@@ -1806,6 +2016,8 @@ const browseHTML = `<!doctype html>
 
         if (res.ok) {
             alert('Saved successfully!');
+            document.getElementById('tree-root').innerHTML = '';
+            loadRoots();
             loadEntry(currentEntryDN);
         } else {
             alert('Failed to save changes.');
@@ -1845,8 +2057,13 @@ const browseHTML = `<!doctype html>
         const res = await fetch('/api/settings');
         if (res.ok) {
             const data = await res.json();
-            document.getElementById('settings-ui-json').value = JSON.stringify(data.ui || {}, null, 2);
+            document.getElementById('settings-ui-json').value = JSON.stringify({
+                theme: data.ui?.theme || 'dark',
+                context_menu: data.ui?.context_menu || []
+            }, null, 2);
             document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
+            document.getElementById('settings-type-actions-json').value = JSON.stringify(data.ui?.type_actions || {}, null, 2);
+            document.getElementById('settings-default-gid-number').value = data.default_gid_number || '1000';
             document.getElementById('settings-default-group').value = data.default_group || '';
 
             document.getElementById('settings-session-ttl').value = data.session?.ttl_minutes || 1440;
@@ -1877,10 +2094,15 @@ const browseHTML = `<!doctype html>
         try {
             const ui = JSON.parse(document.getElementById('settings-ui-json').value || '{}');
             const objects = JSON.parse(document.getElementById('settings-objects-json').value || '{}');
+            const typeActions = JSON.parse(document.getElementById('settings-type-actions-json').value || '{}');
 
             const newSettings = {
-                ui: ui,
+                ui: {
+                    ...ui,
+                    type_actions: typeActions,
+                },
                 objects: objects,
+                default_gid_number: document.getElementById('settings-default-gid-number').value || '1000',
                 default_group: document.getElementById('settings-default-group').value,
                 assets: {
                     logo: document.getElementById('settings-logo-url').value,
@@ -1919,7 +2141,7 @@ const browseHTML = `<!doctype html>
                 alert('Failed to save settings');
             }
         } catch (e) {
-            alert('Invalid JSON format for Theme/Context Menu or Objects');
+            alert('Invalid JSON format for UI, objects, or entry type actions');
         }
     }
 
@@ -2010,6 +2232,17 @@ const browseHTML = `<!doctype html>
                 });
             }
             formDiv.innerHTML = html;
+
+            const gidInputs = formDiv.querySelectorAll('[data-attr="gidnumber"], [data-attr="gidNumber"]');
+            if (gidInputs.length > 0) {
+                const gidRes = await fetch('/api/default_gid');
+                if (gidRes.ok) {
+                    const gid = await gidRes.text();
+                    gidInputs.forEach(input => {
+                        if (!input.value) input.value = gid || '1000';
+                    });
+                }
+            }
         } catch(e) {
             formDiv.innerHTML = '<span style="color:red">Error: ' + e.message + '</span>';
         }
@@ -2154,6 +2387,53 @@ const browseHTML = `<!doctype html>
             document.getElementById('group-select-modal').style.display='none';
         } else {
             alert('Failed to add to group');
+        }
+    }
+
+    async function removeMembership(groupDN) {
+        if (!currentEntryDN) return;
+        if (!confirm('Remove ' + currentEntryDN + ' from ' + groupDN + '?')) return;
+
+        const [groupRes, userRes] = await Promise.all([
+            fetch('/api/entry?dn=' + encodeURIComponent(groupDN)),
+            fetch('/api/entry?dn=' + encodeURIComponent(currentEntryDN)),
+        ]);
+        if (!groupRes.ok || !userRes.ok) {
+            alert('Failed to inspect group membership');
+            return;
+        }
+
+        const groupData = await groupRes.json();
+        const userData = await userRes.json();
+        const deleteValues = {};
+
+        const memberVals = groupData['member'] || [];
+        if (memberVals.includes(currentEntryDN)) {
+            deleteValues.member = [currentEntryDN];
+        }
+
+        const uid = (userData['uid'] && userData['uid'][0]) || '';
+        const memberUidVals = groupData['memberUid'] || [];
+        if (uid && memberUidVals.includes(uid)) {
+            deleteValues.memberUid = [uid];
+        }
+
+        if (Object.keys(deleteValues).length === 0) {
+            alert('No removable membership values were found on the target group.');
+            return;
+        }
+
+        const res = await fetch('/api/modify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ dn: groupDN, delete_values: deleteValues })
+        });
+
+        if (res.ok) {
+            alert('Membership removed successfully!');
+            loadEntry(currentEntryDN);
+        } else {
+            alert('Failed to remove membership: ' + await res.text());
         }
     }
 
@@ -2387,23 +2667,22 @@ async function loadSchema(type) {
         }
 
         let html = '';
+        const badgeList = (items) => (items || []).map(item => '<span class="type-badge">' + item + '</span>').join('');
         if (type === 'objectClasses') {
             document.getElementById('schema-attr').value = 'olcObjectClasses';
             currentSchemaData.objectClasses.forEach(oc => {
                 html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
-                    '<h3 style="margin-top:0;color:#3b82f6;">' + oc.name + '</h3>' +
-                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + oc.dn + '</div>';
-                if (oc.sup && oc.sup.length > 0) html += '<div style="margin-bottom:5px;"><strong>SUP:</strong> ' + oc.sup.join(', ') + '</div>';
-                if (oc.must && oc.must.length > 0) {
-                    html += '<div style="margin-bottom:5px;"><strong>MUST:</strong><ul style="margin:5px 0;padding-left:20px;">';
-                    oc.must.forEach(m => { html += '<li>' + m + '</li>'; });
-                    html += '</ul></div>';
-                }
-                if (oc.may && oc.may.length > 0) {
-                    html += '<div style="margin-bottom:5px;"><strong>MAY:</strong><ul style="margin:5px 0;padding-left:20px;">';
-                    oc.may.forEach(m => { html += '<li>' + m + '</li>'; });
-                    html += '</ul></div>';
-                }
+                    '<h3 style="margin-top:0;color:#3b82f6;">' + (oc.name || 'unnamed') + '</h3>' +
+                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + oc.dn + '</div>' +
+                    '<div style="margin-bottom:8px;">' +
+                        '<span class="type-badge">' + (oc.kind || 'STRUCTURAL') + '</span>' +
+                        (oc.oid ? '<span class="type-badge">OID ' + oc.oid + '</span>' : '') +
+                    '</div>';
+                if (oc.aliases && oc.aliases.length > 1) html += '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + badgeList(oc.aliases.slice(1)) + '</div>';
+                if (oc.desc) html += '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + oc.desc + '</div>';
+                if (oc.sup && oc.sup.length > 0) html += '<div style="margin-bottom:8px;"><strong>SUP:</strong> ' + badgeList(oc.sup) + '</div>';
+                if (oc.must && oc.must.length > 0) html += '<div style="margin-bottom:8px;"><strong>MUST:</strong><div>' + badgeList(oc.must) + '</div></div>';
+                if (oc.may && oc.may.length > 0) html += '<div style="margin-bottom:8px;"><strong>MAY:</strong><div>' + badgeList(oc.may) + '</div></div>';
                 html += '<details style="margin-top:10px;">' +
                     '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
                     '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + oc.raw + '</pre>' +
@@ -2414,9 +2693,14 @@ async function loadSchema(type) {
             currentSchemaData.attributeTypes.forEach(at => {
                 html += '<div style="background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:15px;">' +
                     '<h3 style="margin-top:0;color:#10b981;">' + (at.name || 'Unnamed') + '</h3>' +
-                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + at.dn + '</div>';
-                if (at.desc) html += '<div style="margin-bottom:5px;"><strong>DESC:</strong> ' + at.desc + '</div>';
-                if (at.syntax) html += '<div style="margin-bottom:5px;"><strong>SYNTAX:</strong> <span style="background:#374151;padding:2px 6px;border-radius:4px;font-family:monospace;">' + at.syntax + '</span></div>';
+                    '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + at.dn + '</div>' +
+                    '<div style="margin-bottom:8px;">' +
+                        (at.oid ? '<span class="type-badge">OID ' + at.oid + '</span>' : '') +
+                        (at.singleValue ? '<span class="type-badge">SINGLE-VALUE</span>' : '') +
+                    '</div>';
+                if (at.aliases && at.aliases.length > 1) html += '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + badgeList(at.aliases.slice(1)) + '</div>';
+                if (at.desc) html += '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + at.desc + '</div>';
+                if (at.syntax) html += '<div style="margin-bottom:8px;"><strong>Syntax:</strong> <span class="type-badge" style="font-family:monospace;">' + at.syntax + '</span></div>';
                 html += '<details style="margin-top:10px;">' +
                     '<summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary>' +
                     '<pre style="background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;">' + at.raw + '</pre>' +
