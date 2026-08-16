@@ -50,6 +50,9 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 	}
 	body := rr.Body.String()
 	checks := []string{
+		"name=\"viewport\"",
+		"entry-toolbar-actions",
+		"table-wrap",
 		"settings-modal-content",
 		"/ui/settings",
 		"/ui/groups/select",

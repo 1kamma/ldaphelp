@@ -1012,25 +1012,28 @@ const browseHTML = `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>LDAP Browser</title>
   <link rel="icon" href="{{.AssetURL.Favicon}}">
   <script src="https://unpkg.com/htmx.org@2.0.6"></script>
   <style>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
-    body { display: flex; height: 100vh; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); }
-    #sidebar { width: 400px; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px; background: var(--sidebar-bg); box-shadow: 2px 0 5px rgba(0,0,0,0.05); }
-    #content { flex: 1; padding: 20px; overflow-y: auto; }
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    body { display: flex; min-height: 100vh; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+    #sidebar { width: min(400px, 34vw); min-width: 280px; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px; background: var(--sidebar-bg); box-shadow: 2px 0 5px rgba(0,0,0,0.05); box-sizing: border-box; }
+    #content { flex: 1 1 auto; min-width: 0; padding: 20px; overflow-y: auto; box-sizing: border-box; }
+    .header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
     .header h2, .header h3 { margin: 0; color: inherit; }
-    .btn { padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 14px; margin-left: 5px;}
+    .header-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .btn { padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 14px; margin-left: 5px; max-width: 100%;}
     .tree-node { margin-left: 15px; list-style: none; line-height: 1.8; white-space: nowrap; }
     .tree-ul { padding-left: 0; margin: 0; }
     .expand-icon { cursor: pointer; display: inline-block; width: 20px; text-align: center; color: #6b7280; font-size: 12px; }
     .item-text { cursor: pointer; padding: 3px 6px; border-radius: 4px; color: inherit; font-size: 15px; }
     .item-text:hover { background: var(--hover); }
     .selected { background: var(--selected-bg) !important; color: var(--selected-text) !important; font-weight: bold; }
-    table { width: 100%; border-collapse: collapse; background: var(--table-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 6px; overflow: hidden; }
+    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { width: 100%; min-width: 640px; border-collapse: collapse; background: var(--table-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 6px; overflow: hidden; }
     th, td { border: 1px solid var(--border); padding: 12px; text-align: left; font-size: 14px; }
     th { background: var(--th-bg); font-weight: 600; width: 30%; color: inherit; }
     td { word-break: break-all; color: inherit; font-family: monospace; }
@@ -1060,14 +1063,53 @@ const browseHTML = `<!doctype html>
     .schema-section-title { margin-top: 14px; margin-bottom: 6px; font-size: 13px; font-weight: 600; font-family: sans-serif; color: inherit; }
     .schema-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
     .schema-raw { margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #9ca3af; }
+    .entry-toolbar { display:flex; justify-content:space-between; gap:10px; margin-bottom:15px; align-items:center; flex-wrap:wrap; }
+    .entry-toolbar-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .entry-toolbar-actions .btn, .header-actions .btn { margin-left: 0; }
+    .entry-dn-box { flex:1 1 320px; min-width:0; font-family: monospace; background: var(--hover); padding: 10px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; overflow-wrap:anywhere; }
+    .inline-editor-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .inline-editor-row > input, .inline-editor-row > select { flex:1 1 220px; min-width:0; }
+    #context-menu { max-width: min(280px, calc(100vw - 16px)); }
+    @media (min-width: 1440px) {
+      #sidebar { width: min(440px, 30vw); }
+      #content { padding: 28px; }
+      .schema-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    }
+    @media (max-width: 900px) {
+      body { flex-direction: column; overflow: auto; }
+      #sidebar { width: 100%; min-width: 0; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); box-shadow: none; }
+      #content { width: 100%; padding: 14px; }
+      .modal-content { width: min(680px, calc(100vw - 20px)); }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 14px; }
+      #sidebar { padding: 8px; max-height: 46vh; }
+      #content { padding: 10px; }
+      .header { margin-bottom: 14px; }
+      .header-actions { width: 100%; justify-content: stretch; }
+      .header-actions .btn, .entry-toolbar-actions .btn, .modal-actions .btn { flex: 1 1 140px; }
+      .btn { padding: 8px 10px; }
+      th, td { padding: 8px; font-size: 13px; }
+      table { min-width: 520px; }
+      .modal-content { width: calc(100vw - 12px) !important; max-height: 92vh; padding: 14px; border-radius: 10px; }
+      .modal-scroll-body { padding-right: 2px; }
+      .modal-actions { display:flex; gap:8px; flex-wrap:wrap; }
+      .modal-footer-fixed { padding-top: 10px; }
+      .schema-grid { grid-template-columns: 1fr; }
+      .entry-dn-box { flex-basis: 100%; }
+      .entry-toolbar-actions { width: 100%; justify-content: stretch; }
+      .inline-editor-row { flex-direction: column; align-items: stretch; }
+      #ldap-search-results { max-height: 200px; }
+      #context-menu { left: 8px !important; right: 8px; width: auto; }
+    }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <div class="header">
-    <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-left:16px;">Schema Manager</button>
       <h3>LDAP Tree</h3>
-      <div>
+      <div class="header-actions">
+        <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Schema Manager</button>
         <button class="btn" style="background: #4b5563;" onclick="openSettings()">Settings</button>
         <a href="/logout" class="btn">Logout</a>
       </div>
@@ -1097,38 +1139,48 @@ const browseHTML = `<!doctype html>
   </div>
   <div id="content">
     <div class="header">
-    <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-left:16px;">Schema Manager</button>
       <h2>Entry Details</h2>
+      <div class="header-actions">
+        <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Schema Manager</button>
+      </div>
     </div>
-    <div style="display:flex; justify-content:space-between; margin-bottom: 15px; align-items:center;">
-      <div id="entry-dn" style="flex:1; font-family: monospace; background: var(--hover); padding: 10px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer;" title="Click to copy DN" onclick="copyDN()">Select an entry to view details.</div>
-      <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6; margin-left: 10px;" onclick="showAddObjectClass()">Add Object Class</button>
-      <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6; margin-left: 10px;" onclick="showAddAttribute()">Add Attribute</button>
-      <button id="btn-edit" class="btn" style="display:none; margin-left: 10px;" onclick="toggleEdit()">Edit</button>
-      <button id="btn-save" class="btn" style="display:none; background: #10b981; margin-left: 10px;" onclick="saveEdits()">Save</button>
-      <button id="btn-delete" class="btn" style="display:none; margin-left: 10px;" onclick="deleteEntry()">Delete</button>
+    <div class="entry-toolbar">
+      <div id="entry-dn" class="entry-dn-box" title="Click to copy DN" onclick="copyDN()">Select an entry to view details.</div>
+      <div class="entry-toolbar-actions">
+        <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6;" onclick="showAddObjectClass()">Add Object Class</button>
+        <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6;" onclick="showAddAttribute()">Add Attribute</button>
+        <button id="btn-edit" class="btn" style="display:none;" onclick="toggleEdit()">Edit</button>
+        <button id="btn-save" class="btn" style="display:none; background: #10b981;" onclick="saveEdits()">Save</button>
+        <button id="btn-delete" class="btn" style="display:none;" onclick="deleteEntry()">Delete</button>
+      </div>
     </div>
     <div id="add-attr-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
-      <select id="add-attr-select" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></select>
-      <input type="text" id="add-attr-val" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
-      <button class="btn" style="background: #10b981; padding: 4px 8px;" onclick="addAttribute()">Add</button>
+      <div class="inline-editor-row">
+        <select id="add-attr-select" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></select>
+        <input type="text" id="add-attr-val" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
+        <button class="btn" style="background: #10b981; padding: 4px 8px;" onclick="addAttribute()">Add</button>
+      </div>
     </div>
     <div id="add-oc-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
-      <input type="text" id="add-oc-name" placeholder="Object Class Name" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
-      <button class="btn" style="background: #3b82f6; padding: 4px 8px;" onclick="nextAddObjectClass()">Next</button>
+      <div class="inline-editor-row">
+        <input type="text" id="add-oc-name" placeholder="Object Class Name" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
+        <button class="btn" style="background: #3b82f6; padding: 4px 8px;" onclick="nextAddObjectClass()">Next</button>
+      </div>
       <div id="add-oc-attrs" style="margin-top: 10px; display:none;"></div>
       <button id="btn-submit-oc" class="btn" style="display:none; background: #10b981; padding: 4px 8px; margin-top: 10px;" onclick="submitAddObjectClass()">Submit</button>
     </div>
+    <div class="table-wrap">
     <table id="entry-attrs" style="display:none;">
       <thead><tr><th>Attribute</th><th>Value(s)</th></tr></thead>
       <tbody></tbody>
     </table>
+    </div>
   </div>
 
   <div id="context-menu"></div>
 
   <div id="qc-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content modal-scroll-shell">
+    <div class="modal-content modal-scroll-shell" style="width: min(520px, calc(100vw - 20px));">
       <div class="modal-scroll-body">
         <h3 id="qc-title">Quick Create</h3>
         <div id="qc-form"></div>
@@ -1159,7 +1211,7 @@ const browseHTML = `<!doctype html>
   </div>
 
   <div id="credential-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content modal-scroll-shell" style="max-width: 400px;">
+    <div class="modal-content modal-scroll-shell" style="width: min(400px, calc(100vw - 20px));">
       <div class="modal-scroll-body">
         <h3 style="margin-top:0;">Add Credential to Vault</h3>
         <div class="form-group">
@@ -2520,14 +2572,16 @@ const browseHTML = `<!doctype html>
 
     loadRoots();
   </script>
-<div id="schema-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;align-items:center;justify-content:center;">
-    <div class="modal-content modal-scroll-shell" style="width:90%;max-width:1200px;">
+<div id="schema-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;align-items:center;justify-content:center;padding:10px;box-sizing:border-box;">
+    <div class="modal-content modal-scroll-shell" style="width:min(1400px, calc(100vw - 20px));max-width:100%;max-height:92vh;">
         <div class="modal-scroll-body">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div class="header" style="margin-bottom:20px;">
             <h2 style="margin:0;">Schema Manager</h2>
-            <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
+            <div class="header-actions">
+                <button onclick="document.getElementById('schema-modal').style.display='none'" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Close</button>
+            </div>
         </div>
-        <div style="display:flex;gap:10px;margin-bottom:20px;">
+        <div class="header-actions" style="margin-bottom:20px; justify-content:flex-start;">
             <button onclick="loadSchema('objectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
             <button onclick="loadSchema('attributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
         </div>
@@ -2545,7 +2599,7 @@ const browseHTML = `<!doctype html>
             <textarea id="schema-value" placeholder="Raw Definition Value" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;min-height:100px;"></textarea>
             <button onclick="addSchemaItem()" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Add Item</button>
         </div>
-        <div id="schema-content" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(400px, 1fr));gap:20px;"></div>
+        <div id="schema-content" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(min(100%, 320px), 1fr));gap:20px;"></div>
         </div>
         <div class="modal-actions modal-footer-fixed">
             <button onclick="document.getElementById('schema-modal').style.display='none'" class="btn" style="background:#6b7280;">Close</button>
@@ -2557,7 +2611,7 @@ const browseHTML = `<!doctype html>
 let currentSchemaData = null;
 
 function showSchemaManager() {
-    document.getElementById('schema-modal').style.display = 'block';
+    document.getElementById('schema-modal').style.display = 'flex';
     loadSchema('objectClasses');
 }
 
