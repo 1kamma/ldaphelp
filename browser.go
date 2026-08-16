@@ -1020,13 +1020,15 @@ const browseHTML = `<!doctype html>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
     body { display: flex; min-height: 100vh; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
-    #sidebar { width: min(400px, 34vw); min-width: 280px; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px; background: var(--sidebar-bg); box-shadow: 2px 0 5px rgba(0,0,0,0.05); box-sizing: border-box; }
-    #content { flex: 1 1 auto; min-width: 0; padding: 20px; overflow-y: auto; box-sizing: border-box; }
+    #sidebar { width: min(400px, 34vw); min-width: 280px; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px; background: var(--sidebar-bg); box-shadow: 2px 0 5px rgba(0,0,0,0.05); box-sizing: border-box; }
+    #content { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 20px; overflow-y: auto; box-sizing: border-box; }
     .header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
     .header h2, .header h3 { margin: 0; color: inherit; }
     .header-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .btn { padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 14px; margin-left: 5px; max-width: 100%;}
     .tree-node { margin-left: 15px; list-style: none; line-height: 1.8; white-space: nowrap; }
+    .tree-ul { padding-left: 0; margin: 0; }
+    #tree-root { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-left: 6px; }
     .tree-ul { padding-left: 0; margin: 0; }
     .expand-icon { cursor: pointer; display: inline-block; width: 20px; text-align: center; color: #6b7280; font-size: 12px; }
     .item-text { cursor: pointer; padding: 3px 6px; border-radius: 4px; color: inherit; font-size: 15px; }
@@ -1064,6 +1066,7 @@ const browseHTML = `<!doctype html>
     .schema-section-title { margin-top: 14px; margin-bottom: 6px; font-size: 13px; font-weight: 600; font-family: sans-serif; color: inherit; }
     .schema-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
     .schema-raw { margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #9ca3af; }
+    .subschema-scroll-panel { max-height: min(70vh, 900px); overflow: auto; overscroll-behavior: contain; padding-right: 4px; }
     .entry-toolbar { display:flex; justify-content:space-between; gap:10px; margin-bottom:15px; align-items:center; flex-wrap:wrap; }
     .entry-toolbar-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
     .entry-toolbar-actions .btn, .header-actions .btn { margin-left: 0; }
@@ -1098,6 +1101,7 @@ const browseHTML = `<!doctype html>
       .modal-actions { display:flex; gap:8px; flex-wrap:wrap; }
       .modal-footer-fixed { padding-top: 10px; }
       .schema-grid { grid-template-columns: 1fr; }
+      .subschema-scroll-panel { max-height: min(62vh, calc(100dvh - 220px)); }
       .entry-dn-box { flex-basis: 100%; }
       .entry-toolbar-actions { width: 100%; justify-content: stretch; }
       .inline-editor-row { flex-direction: column; align-items: stretch; }
@@ -1941,7 +1945,8 @@ const browseHTML = `<!doctype html>
 
         const attrs = Object.keys(data).sort();
         const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');
-        const isSubschemaEntry = !!(ocKey && (data[ocKey] || []).some(v => String(v).toLowerCase() === 'subschema'));
+        const objectClasses = ocKey ? (data[ocKey] || []) : [];
+        const isSubschemaEntry = objectClasses.some(v => String(v).toLowerCase() === 'subschema');
         for (const attr of attrs) {
             const tr = document.createElement('tr');
             const tdAttr = document.createElement('td');
@@ -1974,9 +1979,8 @@ const browseHTML = `<!doctype html>
                 });
             }
         }
-        const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');
         if (ocKey) {
-            updateTreeNodeAppearance(dn, data[ocKey]);
+            updateTreeNodeAppearance(dn, objectClasses);
         }
         document.getElementById('entry-attrs').style.display = 'table';
         document.getElementById('add-attr-panel').style.display = 'none';
