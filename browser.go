@@ -1014,6 +1014,7 @@ const browseHTML = `<!doctype html>
   <meta charset="utf-8" />
   <title>LDAP Browser</title>
   <link rel="icon" href="{{.AssetURL.Favicon}}">
+  <script src="https://unpkg.com/htmx.org@2.0.6"></script>
   <style>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
@@ -1152,94 +1153,8 @@ const browseHTML = `<!doctype html>
   </div>
 
   <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div class="modal-content modal-scroll-shell" style="width: 600px;">
-      <div class="modal-scroll-body">
-      <h3>Settings</h3>
-
-      <h4>Theme & Custom Context Menu (JSON)</h4>
-      <div class="form-help">Use this for theme selection and optional custom actions that should appear in addition to the built-in type-aware menu.</div>
-      <textarea id="settings-ui-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
-
-      <h4>Quick Create Objects (JSON)</h4>
-      <div class="form-help">Configure which object types appear in Quick Create and which attribute builds the DN.</div>
-      <textarea id="settings-objects-json" rows="4" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
-
-      <h4>Entry Type Actions (JSON)</h4>
-      <div class="form-help">Map object classes to right-click capabilities like adding members or setting passwords.</div>
-      <textarea id="settings-type-actions-json" rows="8" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
-
-      <h4>ObjectClass Icons (JSON)</h4>
-      <div class="form-help">Assign an icon per objectClass. Example: {"inetorgperson":"🪪","posixaccount":"🐧"}</div>
-      <textarea id="settings-icons-json" rows="6" style="width:100%; font-family:monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></textarea>
-
-      <h4>Default gidNumber</h4>
-      <div class="form-help">Used as the default value for new posixAccount and posixGroup entries. Defaults to 1000.</div>
-      <input type="text" id="settings-default-gid-number" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
-
-      <h4>Default posixGroup DN (optional fallback source)</h4>
-      <div class="form-help">If set and no explicit default gidNumber is configured, LDAP Help can read the group's gidNumber from this DN.</div>
-      <input type="text" id="settings-default-group" style="width:100%; padding:4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" />
-
-      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
-
-      <h3>Branding</h3>
-
-      <h4>Direct URL/path (runtime)</h4>
-      <input type="text" id="settings-logo-url" class="input-field" placeholder="Logo URL/path (or embedded:logo)" style="width: 100%; margin-top: 5px;" />
-      <input type="text" id="settings-favicon-url" class="input-field" placeholder="Favicon URL/path (or embedded:icon)" style="width: 100%; margin-top: 5px;" />
-
-      <h4 style="margin-top: 15px;">Embed (upload from browser)</h4>
-      <div style="display:flex; gap:10px; align-items:center; margin-top: 5px; flex-wrap: wrap;">
-        <input type="file" id="settings-logo-file" class="input-field" style="flex:1 1 280px;" />
-        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromUpload('logo', 'settings-logo-file')">Upload & Embed Logo</button>
-      </div>
-      <div style="display:flex; gap:10px; align-items:center; margin-top: 10px; flex-wrap: wrap;">
-        <input type="file" id="settings-favicon-file" class="input-field" style="flex:1 1 280px;" />
-        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromUpload('icon', 'settings-favicon-file')">Upload & Embed Favicon</button>
-      </div>
-
-      <h4 style="margin-top: 15px;">Embed from server filesystem (source file)</h4>
-      <div style="display:flex; gap:10px; align-items:center; margin-top: 5px; flex-wrap: wrap;">
-        <input type="text" id="settings-logo-source-file" class="input-field" placeholder="/etc/ldaphelp/branding/logo.png (or relative path if server supports it)" style="flex:1 1 280px;" />
-        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromSourceFile('logo', 'settings-logo-source-file')">Embed Logo</button>
-      </div>
-
-      <div style="display:flex; gap:10px; align-items:center; margin-top: 10px; flex-wrap: wrap;">
-        <input type="text" id="settings-favicon-source-file" class="input-field" placeholder="/etc/ldaphelp/branding/favicon.svg (or relative path if server supports it)" style="flex:1 1 280px;" />
-        <button class="btn" style="background:#4b5563;" onclick="embedAssetFromSourceFile('icon', 'settings-favicon-source-file')">Embed Favicon</button>
-      </div>
-
-      <div style="margin-top: 10px; color: var(--text); opacity: 0.85; font-size: 12px; line-height: 1.4;">
-        Tip: After embedding, set the runtime fields above to <code>embedded:logo</code> and <code>embedded:icon</code> (or just reload — your server may switch them automatically).
-      </div>
-
-      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
-
-      <h3>Session Settings</h3>
-      <label>TTL (minutes): <input type="number" id="settings-session-ttl" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label><br>
-      <label style="margin-top: 10px; display: inline-block;">Idle (minutes): <input type="number" id="settings-session-idle" style="width: 100px; background: var(--bg); color: var(--text); border: 1px solid var(--border);" /></label>
-
-      <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border);" />
-
-      <h3>SSO Connections</h3>
-
-      <h4>SAML</h4>
-      <label><input type="checkbox" id="saml-enabled"> Enabled</label><br>
-      <input type="text" id="saml-idp" class="input-field" placeholder="IdP URL" style="width: 100%; margin-top: 5px;" />
-      <input type="text" id="saml-entity" class="input-field" placeholder="Entity ID" style="width: 100%; margin-top: 5px;" />
-      <textarea id="saml-cert" rows="3" class="input-field" placeholder="Certificate" style="width: 100%; margin-top: 5px;"></textarea>
-
-      <h4>OIDC</h4>
-      <label><input type="checkbox" id="oidc-enabled"> Enabled</label><br>
-      <input type="text" id="oidc-issuer" class="input-field" placeholder="Issuer URL" style="width: 100%; margin-top: 5px;" />
-      <input type="text" id="oidc-clientid" class="input-field" placeholder="Client ID" style="width: 100%; margin-top: 5px;" />
-      <input type="text" id="oidc-clientsecret" class="input-field" placeholder="Client Secret" style="width: 100%; margin-top: 5px;" />
-
-      </div>
-      <div class="modal-actions modal-footer-fixed">
-        <button class="btn" style="background: #6b7280;" onclick="document.getElementById('settings-modal').style.display='none'">Cancel</button>
-        <button class="btn" style="background: #10b981;" onclick="saveSettings()">Save</button>
-      </div>
+    <div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: 600px;">
+      <div class="modal-scroll-body" style="padding: 20px;">Loading settings...</div>
     </div>
   </div>
 
@@ -2164,98 +2079,15 @@ const browseHTML = `<!doctype html>
     });
 
     async function openSettings() {
-        const res = await fetch('/api/settings');
-        if (res.ok) {
-            const data = await res.json();
-            document.getElementById('settings-ui-json').value = JSON.stringify({
-                theme: data.ui?.theme || 'dark',
-                context_menu: data.ui?.context_menu || []
-            }, null, 2);
-            document.getElementById('settings-objects-json').value = JSON.stringify(data.objects || {}, null, 2);
-            document.getElementById('settings-type-actions-json').value = JSON.stringify(data.ui?.type_actions || {}, null, 2);
-            document.getElementById('settings-icons-json').value = JSON.stringify(data.ui?.object_class_icons || {}, null, 2);
-            document.getElementById('settings-default-gid-number').value = data.default_gid_number || '1000';
-            document.getElementById('settings-default-group').value = data.default_group || '';
-
-            document.getElementById('settings-session-ttl').value = data.session?.ttl_minutes || 1440;
-            document.getElementById('settings-session-idle').value = data.session?.idle_minutes || 60;
-
-            document.getElementById('settings-logo-url').value = data.assets?.logo || '';
-            document.getElementById('settings-favicon-url').value = data.assets?.favicon || '';
-            document.getElementById('settings-logo-source-file').value = data.assets?.logo_source_file || '';
-            document.getElementById('settings-favicon-source-file').value = data.assets?.favicon_source_file || '';
-
-            document.getElementById('saml-enabled').checked = data.sso?.saml?.enabled || false;
-            document.getElementById('saml-idp').value = data.sso?.saml?.idp_url || '';
-            document.getElementById('saml-entity').value = data.sso?.saml?.entity_id || '';
-            document.getElementById('saml-cert').value = data.sso?.saml?.cert || '';
-
-            document.getElementById('oidc-enabled').checked = data.sso?.oidc?.enabled || false;
-            document.getElementById('oidc-issuer').value = data.sso?.oidc?.issuer_url || '';
-            document.getElementById('oidc-clientid').value = data.sso?.oidc?.client_id || '';
-            document.getElementById('oidc-clientsecret').value = data.sso?.oidc?.client_secret || '';
-
-            document.getElementById('settings-modal').style.display = 'flex';
-        } else {
-            alert('Failed to load settings');
-        }
-    }
-
-    async function saveSettings() {
-        try {
-            const ui = JSON.parse(document.getElementById('settings-ui-json').value || '{}');
-            const objects = JSON.parse(document.getElementById('settings-objects-json').value || '{}');
-            const typeActions = JSON.parse(document.getElementById('settings-type-actions-json').value || '{}');
-            const objectClassIcons = JSON.parse(document.getElementById('settings-icons-json').value || '{}');
-
-            const newSettings = {
-                ui: {
-                    ...ui,
-                    type_actions: typeActions,
-                    object_class_icons: objectClassIcons,
-                },
-                objects: objects,
-                default_gid_number: document.getElementById('settings-default-gid-number').value || '1000',
-                default_group: document.getElementById('settings-default-group').value,
-                assets: {
-                    logo: document.getElementById('settings-logo-url').value,
-                    favicon: document.getElementById('settings-favicon-url').value,
-                    logo_source_file: document.getElementById('settings-logo-source-file').value,
-                    favicon_source_file: document.getElementById('settings-favicon-source-file').value
-                },
-                session: {
-                    ttl_minutes: parseInt(document.getElementById('settings-session-ttl').value, 10) || 1440,
-                    idle_minutes: parseInt(document.getElementById('settings-session-idle').value, 10) || 60
-                },
-                sso: {
-                    saml: {
-                        enabled: document.getElementById('saml-enabled').checked,
-                        idp_url: document.getElementById('saml-idp').value,
-                        entity_id: document.getElementById('saml-entity').value,
-                        cert: document.getElementById('saml-cert').value
-                    },
-                    oidc: {
-                        enabled: document.getElementById('oidc-enabled').checked,
-                        issuer_url: document.getElementById('oidc-issuer').value,
-                        client_id: document.getElementById('oidc-clientid').value,
-                        client_secret: document.getElementById('oidc-clientsecret').value
-                    }
-                }
-            };
-
-            const res = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(newSettings)
+        document.getElementById('settings-modal').style.display = 'flex';
+        if (window.htmx) {
+            htmx.ajax('GET', '/ui/settings', {
+                target: '#settings-modal-content',
+                swap: 'outerHTML'
             });
-            if (res.ok) {
-                location.reload();
-            } else {
-                alert('Failed to save settings');
-            }
-        } catch (e) {
-            alert('Invalid JSON format for UI, objects, entry type actions, or objectClass icons');
+            return;
         }
+        alert('HTMX is not available.');
     }
 
     async function embedAssetFromSourceFile(name, inputId) {
@@ -2434,85 +2266,18 @@ const browseHTML = `<!doctype html>
         document.getElementById('group-select-title').textContent = "Add to " + type;
         const listDiv = document.getElementById('group-select-list');
         listDiv.innerHTML = 'Loading...';
+        listDiv.style.display = 'block';
         document.getElementById('group-select-modal').style.display = 'flex';
 
-        let filter = '';
-        if (type === 'posixGroup') {
-            const uRes = await fetch('/api/entry?dn=' + encodeURIComponent(userDN));
-            const uData = await uRes.json();
-            const uid = (uData['uid'] && uData['uid'][0]) || '';
-            if (!uid) {
-                listDiv.innerHTML = 'User has no uid attribute';
-                return;
-            }
-            filter = '(&(objectClass=posixGroup)(!(memberUid=' + uid + ')))';
-        } else if (type === 'groupOfNames') {
-            filter = '(&(objectClass=groupOfNames)(!(member=' + userDN + ')))';
-        }
-
-        const res = await fetch('/api/search?filter=' + encodeURIComponent(filter));
-        if (!res.ok) {
-            listDiv.innerHTML = 'Search failed';
-            return;
-        }
-        const groups = await res.json() || [];
-        if (groups.length === 0) {
-            listDiv.innerHTML = 'No eligible groups found.';
-            return;
-        }
-
-        listDiv.innerHTML = '';
-        listDiv.style.display = 'flex';
-        listDiv.style.flexDirection = 'column';
-        listDiv.style.maxHeight = 'min(70vh, 520px)';
-
-        const filterWrap = document.createElement('div');
-        filterWrap.style.padding = '8px';
-        filterWrap.style.borderBottom = '1px solid var(--border)';
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Filter groups...';
-        input.style.width = '100%';
-        input.style.padding = '6px';
-        input.style.boxSizing = 'border-box';
-        input.style.background = 'var(--bg)';
-        input.style.color = 'var(--text)';
-        input.style.border = '1px solid var(--border)';
-        filterWrap.appendChild(input);
-
-        const resultsDiv = document.createElement('div');
-        resultsDiv.style.flex = '1 1 auto';
-        resultsDiv.style.minHeight = '0';
-        resultsDiv.style.overflowY = 'auto';
-
-        listDiv.appendChild(filterWrap);
-        listDiv.appendChild(resultsDiv);
-
-        const render = (needle) => {
-            resultsDiv.innerHTML = '';
-            const q = (needle || '').toLowerCase().trim();
-            const filtered = q ? groups.filter(g => g.toLowerCase().includes(q) || g.split(',')[0].toLowerCase().includes(q)) : groups;
-            if (filtered.length === 0) {
-                const empty = document.createElement('div');
-                empty.style.padding = '8px';
-                empty.textContent = 'No matches.';
-                resultsDiv.appendChild(empty);
-                return;
-            }
-            filtered.forEach(g => {
-                const div = document.createElement('div');
-                div.style.padding = '8px';
-                div.style.borderBottom = '1px solid var(--border)';
-                div.style.cursor = 'pointer';
-                div.title = g;
-                div.textContent = g.split(',')[0];
-                div.onclick = () => addToGroup(type, g, userDN);
-                resultsDiv.appendChild(div);
+        if (window.htmx) {
+            htmx.ajax('GET', '/ui/groups/select?type=' + encodeURIComponent(type) + '&userDN=' + encodeURIComponent(userDN), {
+                target: '#group-select-list',
+                swap: 'innerHTML'
             });
-        };
+            return;
+        }
 
-        input.oninput = () => render(input.value);
-        render('');
+        listDiv.innerHTML = 'HTMX is not available.';
     }
 
     async function addToGroup(type, groupDN, userDN) {

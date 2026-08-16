@@ -96,7 +96,7 @@ func parseObjectClass(oc string) *SchemaClass {
 	return c
 }
 
-func getResolvedSchema(conn *ldap.Conn, targetClasses []string) (classes []string, must []string, may []string, err error) {
+func getResolvedSchema(conn ldapSearcher, targetClasses []string) (classes []string, must []string, may []string, err error) {
 	req := ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"subschemaSubentry"}, nil)
 	res, err := conn.Search(req)
 	if err != nil || len(res.Entries) == 0 {
@@ -276,19 +276,11 @@ func parseAttributeType(at string) *SchemaAttrDef {
 	return def
 }
 
-func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
-	conn, err := getLDAPConn(w, r, a.cfg)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	defer conn.Close()
-
+func loadSchemaDef(conn ldapSearcher) (SchemaDef, error) {
 	req := ldap.NewSearchRequest("cn=schema,cn=config", ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"olcObjectClasses", "olcAttributeTypes", "cn"}, nil)
 	res, err := conn.Search(req)
 	if err != nil {
-		http.Error(w, "Failed to read cn=schema,cn=config: "+err.Error(), http.StatusInternalServerError)
-		return
+		return SchemaDef{}, fmt.Errorf("Failed to read cn=schema,cn=config: %w", err)
 	}
 
 	var schemaDef SchemaDef
@@ -318,6 +310,23 @@ func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request)
 	sort.Slice(schemaDef.AttributeTypes, func(i, j int) bool {
 		return schemaDef.AttributeTypes[i].Name < schemaDef.AttributeTypes[j].Name
 	})
+
+	return schemaDef, nil
+}
+
+func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request) {
+	conn, err := getLDAPConn(w, r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	schemaDef, err := loadSchemaDef(conn)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schemaDef)

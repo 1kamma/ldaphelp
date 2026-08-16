@@ -422,6 +422,18 @@ func main() {
 
 	// Browser API routes
 	mux.HandleFunc("/browse", app.handleBrowse)
+	mux.HandleFunc("/ui/groups/select", app.handleUIGroupSelector)
+	mux.HandleFunc("/ui/quick-create", app.handleUIQuickCreate)
+	mux.HandleFunc("/ui/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			app.handleUISaveSettings(w, r)
+		} else {
+			app.handleUISettings(w, r)
+		}
+	})
+	mux.HandleFunc("/ui/schema/object-classes", app.handleUISchemaObjectClasses)
+	mux.HandleFunc("/ui/schema/attribute-types", app.handleUISchemaAttributeTypes)
+	mux.HandleFunc("/ui/subschema", app.handleUISubschema)
 
 	// --- Internal API (used by the UI) ---
 	mux.HandleFunc("/api/roots", app.handleApiRoots)
