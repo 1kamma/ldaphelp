@@ -1181,11 +1181,11 @@ const browseHTML = `<!doctype html>
 
   <div id="qc-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
     <div class="modal-content modal-scroll-shell" style="width: min(520px, calc(100vw - 20px));">
-      <div class="modal-scroll-body">
-        <h3 id="qc-title">Quick Create</h3>
-        <div id="qc-form"></div>
+      <div class="modal-scroll-body" style="padding: 20px;">
+        <h3 id="qc-title" style="margin: 0 0 12px 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;">Quick Create</h3>
+        <div id="qc-form">Select an object type to create.</div>
       </div>
-      <div class="modal-actions modal-footer-fixed">
+      <div class="modal-actions modal-footer-fixed" style="padding:12px 20px;">
         <button class="btn" style="background: #6b7280;" onclick="document.getElementById('qc-modal').style.display='none'">Cancel</button>
         <button class="btn" style="background: #10b981;" onclick="submitQuickCreate()">Create</button>
       </div>
@@ -2216,6 +2216,14 @@ const browseHTML = `<!doctype html>
         const formDiv = document.getElementById('qc-form');
         formDiv.innerHTML = 'Loading schema...';
 
+        if (window.htmx) {
+            htmx.ajax('GET', '/ui/quick-create?name=' + encodeURIComponent(objName), {
+                target: '#qc-form',
+                swap: 'innerHTML'
+            });
+            return;
+        }
+
         try {
             const res = await fetch('/api/schema?oc=' + encodeURIComponent(objName));
             if (!res.ok) throw new Error('Failed to load schema');
@@ -2244,17 +2252,6 @@ const browseHTML = `<!doctype html>
                 });
             }
             formDiv.innerHTML = html;
-
-            const gidInputs = formDiv.querySelectorAll('[data-attr="gidnumber"], [data-attr="gidNumber"]');
-            if (gidInputs.length > 0) {
-                const gidRes = await fetch('/api/default_gid');
-                if (gidRes.ok) {
-                    const gid = await gidRes.text();
-                    gidInputs.forEach(input => {
-                        if (!input.value) input.value = gid || '1000';
-                    });
-                }
-            }
         } catch(e) {
             formDiv.innerHTML = '<span style="color:red">Error: ' + e.message + '</span>';
         }

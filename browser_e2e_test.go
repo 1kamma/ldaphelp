@@ -56,7 +56,9 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 		"settings-modal-content",
 		"/ui/settings",
 		"/ui/groups/select",
+		"/ui/quick-create",
 		"modal-scroll-shell",
+		"modal-footer-fixed",
 		"Remove from group",
 		"Binary value (base64)",
 	}

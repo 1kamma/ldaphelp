@@ -78,6 +78,22 @@ type settingsFragmentData struct {
 	SaveError   string
 }
 
+type quickCreateField struct {
+	Name     string
+	Required bool
+	Value    string
+}
+
+type quickCreateFragmentData struct {
+	ObjectName      string
+	DefaultLocation string
+	DNParameter     string
+	ClassCSV        string
+	RequiredFields  []quickCreateField
+	OptionalFields  []quickCreateField
+	Error           string
+}
+
 var settingsTemplate = template.Must(template.New("settings-fragment").Parse(`
 <div id="settings-modal-content" class="modal-content modal-scroll-shell" style="width: 600px;">
   <form hx-post="/ui/settings" hx-target="#settings-modal-content" hx-swap="outerHTML" style="display:flex; flex-direction:column; min-height:0; max-height:80vh;">
@@ -282,6 +298,120 @@ func defaultJSON(raw, fallback string) string {
 		return fallback
 	}
 	return raw
+}
+
+var quickCreateTemplate = template.Must(template.New("quick-create-fragment").Parse(`
+{{if .Error}}
+  <div style="padding:10px; border-radius:4px; background:#7f1d1d; color:#fecaca;">{{.Error}}</div>
+{{else}}
+  <div id="quick-create-form" data-object-name="{{.ObjectName}}">
+    <div style="margin-bottom: 10px;"><strong>Location:</strong><br><input type="text" id="qc-location" value="{{.DefaultLocation}}" style="width:100%; padding:5px; margin-top:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
+    <input type="hidden" id="qc-classes" value="{{.ClassCSV}}">
+    <input type="hidden" id="qc-dn-param" value="{{.DNParameter}}">
+
+    {{if .RequiredFields}}
+      <h4>Required Attributes</h4>
+      {{range .RequiredFields}}
+        <div style="margin-bottom: 5px;"><label>{{.Name}}*</label><br><input type="text" class="qc-input-must" data-attr="{{.Name}}" value="{{.Value}}" style="width:100%; padding:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
+      {{end}}
+    {{end}}
+
+    {{if .OptionalFields}}
+      <h4>Optional Attributes</h4>
+      {{range .OptionalFields}}
+        <div style="margin-bottom: 5px;"><label>{{.Name}}</label><br><input type="text" class="qc-input-may" data-attr="{{.Name}}" value="{{.Value}}" style="width:100%; padding:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
+      {{end}}
+    {{end}}
+  </div>
+{{end}}
+`))
+
+func defaultQuickCreateGID(s Settings) string {
+	if strings.TrimSpace(s.DefaultGIDNumber) != "" {
+		return strings.TrimSpace(s.DefaultGIDNumber)
+	}
+	return "1000"
+}
+
+func quickCreateFieldValue(attr string, cfg Config) string {
+	switch strings.ToLower(strings.TrimSpace(attr)) {
+	case "gidnumber":
+		return defaultQuickCreateGID(cfg.Settings)
+	default:
+		return ""
+	}
+}
+
+func buildQuickCreateFields(attrs []string, required bool, cfg Config) []quickCreateField {
+	var fields []quickCreateField
+	for _, attr := range attrs {
+		if strings.EqualFold(attr, "objectClass") {
+			continue
+		}
+		fields = append(fields, quickCreateField{Name: attr, Required: required, Value: quickCreateFieldValue(attr, cfg)})
+	}
+	return fields
+}
+
+func resolveQuickCreateTemplate(cfg Config, objectName string) (ObjectTemplate, bool) {
+	for name, tmpl := range cfg.Settings.Objects {
+		if strings.EqualFold(name, objectName) {
+			return tmpl, true
+		}
+	}
+	return ObjectTemplate{}, false
+}
+
+func (a *App) handleUIQuickCreate(w http.ResponseWriter, r *http.Request) {
+	objectName := strings.TrimSpace(r.URL.Query().Get("name"))
+	if objectName == "" {
+		http.Error(w, "missing object name", http.StatusBadRequest)
+		return
+	}
+	tmpl, ok := resolveQuickCreateTemplate(a.cfg, objectName)
+	if !ok {
+		http.Error(w, "unknown quick create object", http.StatusNotFound)
+		return
+	}
+	conn, err := schemaConnForUI(a, w, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	classes, must, may, err := getResolvedSchema(conn, []string{objectName})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = quickCreateTemplate.Execute(w, quickCreateFragmentData{ObjectName: objectName, Error: err.Error()})
+		return
+	}
+	lowerName := strings.ToLower(objectName)
+	foundClass := false
+	for _, className := range classes {
+		if strings.EqualFold(className, lowerName) {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		classes = append(classes, objectName)
+		sort.Slice(classes, func(i, j int) bool { return strings.ToLower(classes[i]) < strings.ToLower(classes[j]) })
+	}
+	dnParam := strings.TrimSpace(tmpl.DNParameter)
+	if dnParam == "" {
+		dnParam = "cn"
+	}
+	data := quickCreateFragmentData{
+		ObjectName:      objectName,
+		DefaultLocation: tmpl.DefaultLocation,
+		DNParameter:     dnParam,
+		ClassCSV:        strings.Join(classes, ","),
+		RequiredFields:  buildQuickCreateFields(must, true, a.cfg),
+		OptionalFields:  buildQuickCreateFields(may, false, a.cfg),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = quickCreateTemplate.Execute(w, data)
 }
 
 func stringValueFromMap(m map[string]any, key, fallback string) string {
@@ -603,133 +733,4 @@ func executeGroupSearch(conn ldapSearchConn, cfg Config, filter string, attrs []
 		return strings.ToLower(groups[i].Label) < strings.ToLower(groups[j].Label)
 	})
 	return groups, nil
-}
-
-type quickCreateField struct {
-	Name     string
-	Required bool
-	Value    string
-}
-
-type quickCreateFragmentData struct {
-	ObjectName      string
-	DefaultLocation string
-	DNParameter     string
-	ClassCSV        string
-	RequiredFields  []quickCreateField
-	OptionalFields  []quickCreateField
-	Error           string
-}
-
-var quickCreateTemplate = template.Must(template.New("quick-create-fragment").Parse(`
-{{if .Error}}
-  <div style="padding:10px; border-radius:4px; background:#7f1d1d; color:#fecaca;">{{.Error}}</div>
-{{else}}
-  <div id="quick-create-form" data-object-name="{{.ObjectName}}">
-    <div style="margin-bottom: 10px;"><strong>Location:</strong><br><input type="text" id="qc-location" value="{{.DefaultLocation}}" style="width:100%; padding:5px; margin-top:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
-    <input type="hidden" id="qc-classes" value="{{.ClassCSV}}">
-    <input type="hidden" id="qc-dn-param" value="{{.DNParameter}}">
-
-    {{if .RequiredFields}}
-      <h4>Required Attributes</h4>
-      {{range .RequiredFields}}
-        <div style="margin-bottom: 5px;"><label>{{.Name}}*</label><br><input type="text" class="qc-input-must" data-attr="{{.Name}}" value="{{.Value}}" style="width:100%; padding:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
-      {{end}}
-    {{end}}
-
-    {{if .OptionalFields}}
-      <h4>Optional Attributes</h4>
-      {{range .OptionalFields}}
-        <div style="margin-bottom: 5px;"><label>{{.Name}}</label><br><input type="text" class="qc-input-may" data-attr="{{.Name}}" value="{{.Value}}" style="width:100%; padding:5px; box-sizing:border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></div>
-      {{end}}
-    {{end}}
-  </div>
-{{end}}
-`))
-
-func defaultQuickCreateGID(s Settings) string {
-	if strings.TrimSpace(s.DefaultGIDNumber) != "" {
-		return strings.TrimSpace(s.DefaultGIDNumber)
-	}
-	return "1000"
-}
-
-func quickCreateFieldValue(attr string, cfg Config) string {
-	switch strings.ToLower(strings.TrimSpace(attr)) {
-	case "gidnumber":
-		return defaultQuickCreateGID(cfg.Settings)
-	default:
-		return ""
-	}
-}
-
-func buildQuickCreateFields(attrs []string, required bool, cfg Config) []quickCreateField {
-	var fields []quickCreateField
-	for _, attr := range attrs {
-		if strings.EqualFold(attr, "objectClass") {
-			continue
-		}
-		fields = append(fields, quickCreateField{Name: attr, Required: required, Value: quickCreateFieldValue(attr, cfg)})
-	}
-	return fields
-}
-
-func resolveQuickCreateTemplate(cfg Config, objectName string) (ObjectTemplate, bool) {
-	for name, tmpl := range cfg.Settings.Objects {
-		if strings.EqualFold(name, objectName) {
-			return tmpl, true
-		}
-	}
-	return ObjectTemplate{}, false
-}
-
-func (a *App) handleUIQuickCreate(w http.ResponseWriter, r *http.Request) {
-	objectName := strings.TrimSpace(r.URL.Query().Get("name"))
-	if objectName == "" {
-		http.Error(w, "missing object name", http.StatusBadRequest)
-		return
-	}
-	tmpl, ok := resolveQuickCreateTemplate(a.cfg, objectName)
-	if !ok {
-		http.Error(w, "unknown quick create object", http.StatusNotFound)
-		return
-	}
-	conn, err := schemaConnForUI(a, w, r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	defer conn.Close()
-
-	classes, must, may, err := getResolvedSchema(conn, []string{objectName})
-	if err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = quickCreateTemplate.Execute(w, quickCreateFragmentData{ObjectName: objectName, Error: err.Error()})
-		return
-	}
-	foundClass := false
-	for _, className := range classes {
-		if strings.EqualFold(className, objectName) {
-			foundClass = true
-			break
-		}
-	}
-	if !foundClass {
-		classes = append(classes, objectName)
-		sort.Slice(classes, func(i, j int) bool { return strings.ToLower(classes[i]) < strings.ToLower(classes[j]) })
-	}
-	dnParam := strings.TrimSpace(tmpl.DNParameter)
-	if dnParam == "" {
-		dnParam = "cn"
-	}
-	data := quickCreateFragmentData{
-		ObjectName:      objectName,
-		DefaultLocation: tmpl.DefaultLocation,
-		DNParameter:     dnParam,
-		ClassCSV:        strings.Join(classes, ","),
-		RequiredFields:  buildQuickCreateFields(must, true, a.cfg),
-		OptionalFields:  buildQuickCreateFields(may, false, a.cfg),
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = quickCreateTemplate.Execute(w, data)
 }
