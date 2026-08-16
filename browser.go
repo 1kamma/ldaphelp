@@ -1047,7 +1047,7 @@ const browseHTML = `<!doctype html>
     .search-result:hover { background: var(--hover); }
     .search-result small { display: block; opacity: 0.75; margin-top: 2px; }
     #context-menu { display: none; position: absolute; background: var(--sidebar-bg); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; padding: 5px 0; border-radius: 4px; }
-    .cm-item { padding: 8px 15px; cursor: pointer; color: var(--text); font-size: 14px; }
+    .cm-item { padding: 8px 15px; cursor: pointer; color: var(--text); font-size: 14px; touch-action: manipulation; }
     .cm-item:hover { background: var(--hover); }
     #settings-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center; }
     #qc-modal, #group-select-modal, #settings-modal, #credential-modal, #schema-modal { padding: 10px; box-sizing: border-box; }
@@ -1338,6 +1338,10 @@ const browseHTML = `<!doctype html>
         });
     }
 
+    function hideContextMenu() {
+        document.getElementById('context-menu').style.display = 'none';
+    }
+
     function showContextMenuAt(x, y, items) {
         const cm = document.getElementById('context-menu');
         cm.innerHTML = '';
@@ -1346,14 +1350,91 @@ const browseHTML = `<!doctype html>
             div.className = 'cm-item';
             div.textContent = item.name;
             div.onclick = () => {
-                cm.style.display = 'none';
+                hideContextMenu();
                 item.action();
             };
             cm.appendChild(div);
         });
-        cm.style.display = items && items.length ? 'block' : 'none';
-        cm.style.left = x + 'px';
-        cm.style.top = y + 'px';
+        if (!items || !items.length) {
+            hideContextMenu();
+            return;
+        }
+        cm.style.visibility = 'hidden';
+        cm.style.display = 'block';
+        cm.style.left = '0px';
+        cm.style.top = '0px';
+        const rect = cm.getBoundingClientRect();
+        const minLeft = window.scrollX + 8;
+        const minTop = window.scrollY + 8;
+        const maxLeft = window.scrollX + window.innerWidth - rect.width - 8;
+        const maxTop = window.scrollY + window.innerHeight - rect.height - 8;
+        cm.style.left = Math.max(minLeft, Math.min(x, maxLeft)) + 'px';
+        cm.style.top = Math.max(minTop, Math.min(y, maxTop)) + 'px';
+        cm.style.visibility = 'visible';
+    }
+
+    function consumeLongPressClick(el, event) {
+        if (!el || el.dataset.longPressMenuOpen !== 'true') {
+            return false;
+        }
+        el.dataset.longPressMenuOpen = 'false';
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        return true;
+    }
+
+    function attachLongPressContextMenu(el, getItems) {
+        if (!el) return;
+        let timer = null;
+        let startPoint = null;
+
+        const clearLongPress = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            startPoint = null;
+        };
+
+        el.addEventListener('touchstart', (event) => {
+            if (!event.touches || event.touches.length !== 1) {
+                clearLongPress();
+                return;
+            }
+            const touch = event.touches[0];
+            startPoint = { x: touch.pageX, y: touch.pageY };
+            el.dataset.longPressMenuOpen = 'false';
+            timer = setTimeout(() => {
+                timer = null;
+                const items = (getItems && getItems()) || [];
+                if (!items.length || !startPoint) {
+                    return;
+                }
+                el.dataset.longPressMenuOpen = 'true';
+                showContextMenuAt(startPoint.x, startPoint.y, items);
+            }, 550);
+        }, { passive: true });
+
+        el.addEventListener('touchmove', (event) => {
+            if (!timer || !startPoint || !event.touches || event.touches.length !== 1) {
+                return;
+            }
+            const touch = event.touches[0];
+            if (Math.abs(touch.pageX - startPoint.x) > 12 || Math.abs(touch.pageY - startPoint.y) > 12) {
+                clearLongPress();
+            }
+        }, { passive: true });
+
+        el.addEventListener('touchend', (event) => {
+            if (el.dataset.longPressMenuOpen === 'true') {
+                event.preventDefault();
+            }
+            clearLongPress();
+        }, { passive: false });
+
+        el.addEventListener('touchcancel', clearLongPress, { passive: true });
     }
 
     async function loadRoots() {
@@ -1512,13 +1593,7 @@ const browseHTML = `<!doctype html>
         const text = document.createElement('span');
         text.className = 'item-text';
         text.textContent = nodeData.rdn || nodeData.dn;
-        text.onclick = () => {
-            document.querySelectorAll('.selected').forEach(e => e.classList.remove('selected'));
-            text.classList.add('selected');
-            loadEntry(nodeData.dn);
-        };
-        text.oncontextmenu = (e) => {
-            e.preventDefault();
+        const buildTreeNodeActions = () => {
             const actions = [];
 
             if (settings && settings.ui && settings.ui.context_menu) {
@@ -1554,9 +1629,20 @@ const browseHTML = `<!doctype html>
                     actions.push({ name: 'Add members', action: () => showMemberSelector('groupOfNames', nodeData.dn) });
                 }
             }
-
-            showContextMenuAt(e.pageX, e.pageY, actions);
+            return actions;
         };
+
+        text.onclick = (e) => {
+            if (consumeLongPressClick(text, e)) return;
+            document.querySelectorAll('.selected').forEach(e => e.classList.remove('selected'));
+            text.classList.add('selected');
+            loadEntry(nodeData.dn);
+        };
+        text.oncontextmenu = (e) => {
+            e.preventDefault();
+            showContextMenuAt(e.pageX, e.pageY, buildTreeNodeActions());
+        };
+        attachLongPressContextMenu(text, buildTreeNodeActions);
 
         const childrenUl = document.createElement('ul');
         childrenUl.className = 'tree-ul';
@@ -1799,15 +1885,21 @@ const browseHTML = `<!doctype html>
             a.textContent = value.split(',')[0];
             a.title = value;
             a.href = '#';
-            a.onclick = (e) => { e.preventDefault(); loadEntry(value); };
+            const memberOfActions = () => attrLower === 'memberof' ? [{
+                name: 'Remove from group',
+                action: () => removeMembership(value),
+            }] : [];
+            a.onclick = (e) => {
+                e.preventDefault();
+                if (consumeLongPressClick(a, e)) return;
+                loadEntry(value);
+            };
             a.oncontextmenu = (e) => {
                 if (attrLower !== 'memberof') return;
                 e.preventDefault();
-                showContextMenuAt(e.pageX, e.pageY, [{
-                    name: 'Remove from group',
-                    action: () => removeMembership(value),
-                }]);
+                showContextMenuAt(e.pageX, e.pageY, memberOfActions());
             };
+            attachLongPressContextMenu(a, memberOfActions);
             a.style.color = '#3b82f6';
             a.style.textDecoration = 'none';
             container.appendChild(a);
@@ -2143,9 +2235,11 @@ const browseHTML = `<!doctype html>
 
     document.addEventListener('click', (e) => {
         if (!e.target.closest('#context-menu')) {
-            document.getElementById('context-menu').style.display = 'none';
+            hideContextMenu();
         }
     });
+    document.addEventListener('scroll', hideContextMenu, true);
+    window.addEventListener('resize', hideContextMenu);
 
     async function openSettings() {
         document.getElementById('settings-modal').style.display = 'flex';

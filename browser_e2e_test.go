@@ -59,6 +59,8 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 		"/ui/quick-create",
 		"modal-scroll-shell",
 		"modal-footer-fixed",
+		"attachLongPressContextMenu",
+		"consumeLongPressClick",
 		"Remove from group",
 		"Binary value (base64)",
 	}
