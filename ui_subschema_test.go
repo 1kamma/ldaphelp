@@ -46,7 +46,7 @@ func TestHandleUISubschemaRendersParsedFragment(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Subschema Entry", "groupofnames", "Group of names", "Attribute Types", "Common name", "SINGLE-VALUE"} {
+	for _, want := range []string{"subschema-scroll-panel", "Subschema Entry", "groupofnames", "Group of names", "Attribute Types", "Common name", "SINGLE-VALUE"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected body to contain %q, got %s", want, body)
 		}

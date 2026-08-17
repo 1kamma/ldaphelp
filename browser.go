@@ -1019,23 +1019,63 @@ const browseHTML = `<!doctype html>
   <style>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
-    body { display: flex; min-height: 100vh; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
-    #sidebar { width: min(400px, 34vw); min-width: 280px; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px; background: var(--sidebar-bg); box-shadow: 2px 0 5px rgba(0,0,0,0.05); box-sizing: border-box; }
-    #content { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 20px; overflow-y: auto; box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+    body { display: flex; height: 100%; }
+    #sidebar {
+        width: min(400px, 34vw);
+        min-width: 280px;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--border);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 10px;
+        background: var(--sidebar-bg);
+        box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+        box-sizing: border-box;
+        height: 100%;
+    }
+    #content {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        padding: 20px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
     .header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
     .header h2, .header h3 { margin: 0; color: inherit; }
     .header-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .btn { padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 14px; margin-left: 5px; max-width: 100%;}
     .tree-node { margin-left: 15px; list-style: none; line-height: 1.8; white-space: nowrap; }
-    .tree-ul { padding-left: 0; margin: 0; }
-    #tree-root { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-left: 6px; }
+    .tree-scroll-container {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        height: 100%;
+    }
+    #tree-root {
+        padding-left: 6px;
+        width: 100%;
+        height: 100%;
+    }
     .tree-ul { padding-left: 0; margin: 0; }
     .expand-icon { cursor: pointer; display: inline-block; width: 20px; text-align: center; color: #6b7280; font-size: 12px; }
+    .item-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.15em; height: 1.15em; margin-right: 0.35em; vertical-align: text-bottom; color: inherit; }
+    .item-icon svg { width: 100%; height: 100%; display: block; }
+    .item-icon-fallback { font-size: 0.95em; line-height: 1; }
     .item-text { cursor: pointer; padding: 3px 6px; border-radius: 4px; color: inherit; font-size: 15px; }
     .item-text:hover { background: var(--hover); }
     .selected { background: var(--selected-bg) !important; color: var(--selected-text) !important; font-weight: bold; }
-    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    table { width: 100%; min-width: 640px; border-collapse: collapse; background: var(--table-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 6px; overflow: hidden; }
+    .table-wrap {
+        width: 100%;
+        overflow: visible;
+    }
+    table { width: 100%; border-collapse: collapse; background: var(--table-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 6px; }
     th, td { border: 1px solid var(--border); padding: 12px; text-align: left; font-size: 14px; }
     th { background: var(--th-bg); font-weight: 600; width: 30%; color: inherit; }
     td { word-break: break-all; color: inherit; font-family: monospace; }
@@ -1066,7 +1106,8 @@ const browseHTML = `<!doctype html>
     .schema-section-title { margin-top: 14px; margin-bottom: 6px; font-size: 13px; font-weight: 600; font-family: sans-serif; color: inherit; }
     .schema-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
     .schema-raw { margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #9ca3af; }
-    .subschema-scroll-panel { max-height: min(70vh, 900px); overflow: auto; overscroll-behavior: contain; padding-right: 4px; }
+    .subschema-scroll-panel { max-height: min(70vh, 900px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+    .entry-scroll-container { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
     .entry-toolbar { display:flex; justify-content:space-between; gap:10px; margin-bottom:15px; align-items:center; flex-wrap:wrap; }
     .entry-toolbar-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
     .entry-toolbar-actions .btn, .header-actions .btn { margin-left: 0; }
@@ -1141,7 +1182,9 @@ const browseHTML = `<!doctype html>
       </details>
       <div id="ldap-search-results"></div>
     </div>
-    <ul class="tree-ul" id="tree-root"></ul>
+    <div class="tree-scroll-container">
+      <ul class="tree-ul" id="tree-root"></ul>
+    </div>
   </div>
   <div id="content">
     <div class="header">
@@ -1150,38 +1193,40 @@ const browseHTML = `<!doctype html>
         <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Schema Manager</button>
       </div>
     </div>
-    <div class="entry-toolbar">
-      <div id="entry-dn" class="entry-dn-box" title="Click to copy DN" onclick="copyDN()">Select an entry to view details.</div>
-      <div class="entry-toolbar-actions">
-        <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6;" onclick="showAddObjectClass()">Add Object Class</button>
-        <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6;" onclick="showAddAttribute()">Add Attribute</button>
-        <button id="btn-edit" class="btn" style="display:none;" onclick="toggleEdit()">Edit</button>
-        <button id="btn-save" class="btn" style="display:none; background: #10b981;" onclick="saveEdits()">Save</button>
-        <button id="btn-delete" class="btn" style="display:none;" onclick="deleteEntry()">Delete</button>
+    <div class="entry-scroll-container">
+      <div class="entry-toolbar">
+        <div id="entry-dn" class="entry-dn-box" title="Click to copy DN" onclick="copyDN()">Select an entry to view details.</div>
+        <div class="entry-toolbar-actions">
+          <button id="btn-add-oc" class="btn" style="display:none; background: #8b5cf6;" onclick="showAddObjectClass()">Add Object Class</button>
+          <button id="btn-add-attr" class="btn" style="display:none; background: #3b82f6;" onclick="showAddAttribute()">Add Attribute</button>
+          <button id="btn-edit" class="btn" style="display:none;" onclick="toggleEdit()">Edit</button>
+          <button id="btn-save" class="btn" style="display:none; background: #10b981;" onclick="saveEdits()">Save</button>
+          <button id="btn-delete" class="btn" style="display:none;" onclick="deleteEntry()">Delete</button>
+        </div>
+      </div>
+      <div id="add-attr-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
+        <div class="inline-editor-row">
+          <select id="add-attr-select" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></select>
+          <input type="text" id="add-attr-val" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
+          <button class="btn" style="background: #10b981; padding: 4px 8px;" onclick="addAttribute()">Add</button>
+        </div>
+      </div>
+      <div id="add-oc-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
+        <div class="inline-editor-row">
+          <input type="text" id="add-oc-name" placeholder="Object Class Name" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
+          <button class="btn" style="background: #3b82f6; padding: 4px 8px;" onclick="nextAddObjectClass()">Next</button>
+        </div>
+        <div id="add-oc-attrs" style="margin-top: 10px; display:none;"></div>
+        <button id="btn-submit-oc" class="btn" style="display:none; background: #10b981; padding: 4px 8px; margin-top: 10px;" onclick="submitAddObjectClass()">Submit</button>
+      </div>
+      <div class="table-wrap">
+        <table id="entry-attrs">
+          <thead><tr><th>Attribute</th><th>Value(s)</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
-    <div id="add-attr-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
-      <div class="inline-editor-row">
-        <select id="add-attr-select" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);"></select>
-        <input type="text" id="add-attr-val" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
-        <button class="btn" style="background: #10b981; padding: 4px 8px;" onclick="addAttribute()">Add</button>
-      </div>
     </div>
-    <div id="add-oc-panel" style="display:none; margin-bottom: 15px; padding: 10px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 4px;">
-      <div class="inline-editor-row">
-        <input type="text" id="add-oc-name" placeholder="Object Class Name" style="padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border);">
-        <button class="btn" style="background: #3b82f6; padding: 4px 8px;" onclick="nextAddObjectClass()">Next</button>
-      </div>
-      <div id="add-oc-attrs" style="margin-top: 10px; display:none;"></div>
-      <button id="btn-submit-oc" class="btn" style="display:none; background: #10b981; padding: 4px 8px; margin-top: 10px;" onclick="submitAddObjectClass()">Submit</button>
-    </div>
-    <div class="table-wrap">
-    <table id="entry-attrs" style="display:none;">
-      <thead><tr><th>Attribute</th><th>Value(s)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    </div>
-  </div>
 
   <div id="context-menu"></div>
 
@@ -1257,6 +1302,15 @@ const browseHTML = `<!doctype html>
         }
     }
 
+    function escapeHTML(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function getTypeActionDefaults() {
         return {
             domain: { add_organizational_unit: true },
@@ -1299,34 +1353,122 @@ const browseHTML = `<!doctype html>
 
     function getObjectClassIconMap() {
         return {
-            posixaccount: '🐧',
-            inetorgperson: '🪪',
-            person: '👤',
-            user: '👤',
-            groupofnames: '🗂️',
-            posixgroup: '👥',
-            group: '👥',
-            organizationalunit: '📁',
-            domain: '🌍',
-            dcobject: '🌍',
-            subschema: '📜',
-            monitor: '📊',
-            computer: '💻',
-            device: '💻',
+            top: 'dot',
+            person: 'person',
+            organizationalperson: 'person',
+            inetorgperson: 'person',
+            user: 'person',
+            account: 'person',
+            posixaccount: 'person',
+            groupofnames: 'group',
+            groupofuniquenames: 'group',
+            posixgroup: 'group',
+            group: 'group',
+            organizationalunit: 'folder',
+            organization: 'building',
+            domain: 'globe',
+            dcobject: 'globe',
+            subschema: 'scroll',
+            monitor: 'chart',
+            computer: 'screen',
+            device: 'screen',
         };
     }
 
-    function getIcon(ocs) {
-        if (!ocs) return '📄';
-        const classes = ocs.map(c => c.toLowerCase());
+    function getObjectClassHierarchy() {
+        return {
+            top: null,
+            person: 'top',
+            organizationalperson: 'person',
+            inetorgperson: 'organizationalperson',
+            user: 'organizationalperson',
+            account: 'top',
+            posixaccount: 'account',
+            groupofnames: 'top',
+            groupofuniquenames: 'top',
+            posixgroup: 'top',
+            group: 'top',
+            organizationalunit: 'top',
+            organization: 'top',
+            domain: 'top',
+            dcobject: 'domain',
+            subschema: 'top',
+            monitor: 'top',
+            computer: 'top',
+            device: 'top',
+        };
+    }
+
+    function getIconClass(ocs) {
+        if (!ocs || !ocs.length) return null;
+        const classes = [...new Set(ocs.map(c => String(c).trim().toLowerCase()).filter(Boolean))];
         const iconMap = {
             ...getObjectClassIconMap(),
             ...((settings && settings.ui && settings.ui.object_class_icons) || {}),
         };
-        for (const cls of classes) {
-            if (iconMap[cls]) return iconMap[cls];
+        const hierarchy = getObjectClassHierarchy();
+
+        const getDepth = (cls) => {
+            let depth = 0;
+            let current = cls;
+            const seen = new Set();
+            while (current && !seen.has(current)) {
+                seen.add(current);
+                current = hierarchy[current] || null;
+                depth += 1;
+            }
+            return depth;
+        };
+
+        const candidates = classes.filter(cls => iconMap[cls]);
+        if (!candidates.length) return null;
+
+        candidates.sort((a, b) => {
+            const depthDiff = getDepth(b) - getDepth(a);
+            if (depthDiff !== 0) return depthDiff;
+            return a.localeCompare(b);
+        });
+
+        return candidates[0];
+    }
+
+    function renderSVGIcon(name) {
+        const icons = {
+            dot: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.25" fill="currentColor"></circle></svg>',
+            person: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"></circle><path d="M3.5 13c.6-2.2 2.3-3.5 4.5-3.5s3.9 1.3 4.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>',
+            group: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="5.25" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4"></circle><circle cx="11.25" cy="6.25" r="1.75" fill="none" stroke="currentColor" stroke-width="1.2"></circle><path d="M2.75 13c.45-2 1.95-3.2 3.95-3.2 2.05 0 3.56 1.18 4 3.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path><path d="M9.2 12.8c.22-1.35 1.18-2.2 2.55-2.2 1.05 0 1.9.42 2.5 1.35" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+            folder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 4.5h4.1l1.3 1.5H14.25v5.75a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path><path d="M1.75 6h12.5" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>',
+            building: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.5" width="10" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"></rect><path d="M6 5.25h1.2M8.8 5.25H10M6 7.75h1.2M8.8 7.75H10M6 10.25h1.2M8.8 10.25H10M7.9 13.5V11.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+            globe: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M2.8 8h10.4M8 2.5c1.6 1.5 2.5 3.4 2.5 5.5S9.6 12 8 13.5M8 2.5C6.4 4 5.5 5.9 5.5 8s.9 4 2.5 5.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+            scroll: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2.5h5.25A1.75 1.75 0 0 1 12 4.25v6.5A1.75 1.75 0 0 1 10.25 12.5H5.75A1.75 1.75 0 0 0 4 14.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path><path d="M5.75 12.5A1.75 1.75 0 1 1 4 10.75V4.25A1.75 1.75 0 0 1 5.75 2.5M6.5 5.5h3M6.5 8h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+            chart: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.25h11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path><path d="M4.5 11V8.75M8 11V5.5M11.5 11V7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg>',
+            screen: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.25" y="3" width="11.5" height="7.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"></rect><path d="M6 13h4M8 10.5V13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"></path></svg>',
+            file: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.25 2.5h4.75L12 5.5v7A1 1 0 0 1 11 13.5H4.25a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path><path d="M9 2.5v3h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path></svg>',
+        };
+        return icons[name] || icons.file;
+    }
+
+    function getIconMarkup(ocs) {
+        const cls = getIconClass(ocs);
+        if (!cls) {
+            return renderSVGIcon('file');
         }
-        return '📄';
+
+        const configured = settings && settings.ui && settings.ui.object_class_icons && settings.ui.object_class_icons[cls];
+        if (configured && String(configured).trim().startsWith('<svg')) {
+            return String(configured).trim();
+        }
+
+        const builtInName = getObjectClassIconMap()[cls];
+        if (builtInName) {
+            return renderSVGIcon(builtInName);
+        }
+
+        if (configured) {
+            return '<span class="item-icon-fallback">' + escapeHTML(String(configured)) + '</span>';
+        }
+
+        return renderSVGIcon('file');
     }
 
     function updateTreeNodeAppearance(dn, objectClasses) {
@@ -1337,7 +1479,7 @@ const browseHTML = `<!doctype html>
             }
             const icon = node.querySelector('.item-icon');
             if (icon) {
-                icon.textContent = getIcon(objectClasses) + ' ';
+                icon.innerHTML = getIconMarkup(objectClasses);
             }
         });
     }
@@ -1592,7 +1734,7 @@ const browseHTML = `<!doctype html>
 
         const icon = document.createElement('span');
         icon.className = 'item-icon';
-        icon.textContent = getIcon(nodeData.objectClasses) + ' ';
+        icon.innerHTML = getIconMarkup(nodeData.objectClasses);
 
         const text = document.createElement('span');
         text.className = 'item-text';

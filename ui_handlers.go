@@ -534,7 +534,7 @@ type subschemaFragmentData struct {
 }
 
 var subschemaTemplate = template.Must(template.New("subschema-fragment").Parse(`
-<div id="subschema-fragment-root">
+<div id="subschema-fragment-root" class="subschema-scroll-panel">
   <div class="schema-section-title">Subschema Entry</div>
   <div style="font-size:12px; opacity:0.75; margin-bottom:10px; overflow-wrap:anywhere;">{{.DN}}</div>
 

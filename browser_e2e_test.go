@@ -33,7 +33,9 @@ func newAuthenticatedRequest(t *testing.T, method, path string) *http.Request {
 	return authedReq
 }
 
-func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
+func renderBrowseBody(t *testing.T) string {
+	t.Helper()
+
 	app := &App{cfg: Config{Settings: Settings{
 		DefaultGIDNumber: "1000",
 		Session:          SessionSettings{TTLMinutes: 60, IdleMinutes: 60},
@@ -48,7 +50,11 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", rr.Code)
 	}
-	body := rr.Body.String()
+	return rr.Body.String()
+}
+
+func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
+	body := renderBrowseBody(t)
 	checks := []string{
 		"name=\"viewport\"",
 		"entry-toolbar-actions",
@@ -68,5 +74,12 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 		if !strings.Contains(body, check) {
 			t.Fatalf("expected browse HTML to contain %q", check)
 		}
+	}
+}
+
+func TestHandleBrowseDoesNotDuplicateOcKeyDeclaration(t *testing.T) {
+	body := renderBrowseBody(t)
+	if count := strings.Count(body, "const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');"); count != 1 {
+		t.Fatalf("expected exactly one ocKey declaration in browse script, got %d", count)
 	}
 }
