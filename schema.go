@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -213,6 +214,13 @@ type SchemaDef struct {
 	AttributeTypes []SchemaAttrDef   `json:"attributeTypes"`
 }
 
+type ReplicaTarget struct {
+	URL    string `json:"url"`
+	Label  string `json:"label"`
+	Source string `json:"source"`
+	DN     string `json:"dn,omitempty"`
+}
+
 type SchemaClassAttr struct {
 	Raw     string   `json:"raw"`
 	DN      string   `json:"dn"`
@@ -276,6 +284,140 @@ func parseAttributeType(at string) *SchemaAttrDef {
 	return def
 }
 
+func normalizeLDAPURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, "'\"")
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimSuffix(strings.ToLower(raw), "/")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+func replicaLabelFromURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err == nil && u.Host != "" {
+		return u.Host
+	}
+	return raw
+}
+
+func parseReplicaURLsFromServerID(value string) []string {
+	var urls []string
+	for _, part := range strings.Fields(strings.TrimSpace(value)) {
+		normalized := normalizeLDAPURL(part)
+		if strings.HasPrefix(normalized, "ldap://") || strings.HasPrefix(normalized, "ldaps://") {
+			urls = append(urls, normalized)
+		}
+	}
+	return urls
+}
+
+func parseReplicaURLsFromSyncrepl(value string) []string {
+	re := regexp.MustCompile(`(?i)\bprovider=([^\s]+)`)
+	matches := re.FindAllStringSubmatch(value, -1)
+	var urls []string
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		normalized := normalizeLDAPURL(m[1])
+		if strings.HasPrefix(normalized, "ldap://") || strings.HasPrefix(normalized, "ldaps://") {
+			urls = append(urls, normalized)
+		}
+	}
+	return urls
+}
+
+func detectReplicaTargets(conn ldapSearcher, cfg Config) ([]ReplicaTarget, error) {
+	res, err := conn.Search(ldap.NewSearchRequest("cn=config", ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"olcServerID", "olcSyncRepl", "olcSyncrepl", "cn"}, nil))
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect cn=config for replication peers: %w", err)
+	}
+
+	current := normalizeLDAPURL(cfg.LDAPServer)
+	seen := make(map[string]ReplicaTarget)
+	addTarget := func(rawURL, source, dn string) {
+		normalized := normalizeLDAPURL(rawURL)
+		if normalized == "" || normalized == current {
+			return
+		}
+		if _, ok := seen[normalized]; ok {
+			return
+		}
+		seen[normalized] = ReplicaTarget{URL: normalized, Label: replicaLabelFromURL(normalized), Source: source, DN: dn}
+	}
+
+	for _, entry := range res.Entries {
+		for _, value := range entry.GetAttributeValues("olcServerID") {
+			for _, target := range parseReplicaURLsFromServerID(value) {
+				addTarget(target, "olcServerID", entry.DN)
+			}
+		}
+		for _, attr := range []string{"olcSyncRepl", "olcSyncrepl"} {
+			for _, value := range entry.GetAttributeValues(attr) {
+				for _, target := range parseReplicaURLsFromSyncrepl(value) {
+					addTarget(target, attr, entry.DN)
+				}
+			}
+		}
+	}
+
+	var targets []ReplicaTarget
+	for _, target := range seen {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Label == targets[j].Label {
+			return targets[i].URL < targets[j].URL
+		}
+		return targets[i].Label < targets[j].Label
+	})
+	return targets, nil
+}
+
+func getSessionLDAPCredentials(r *http.Request) (string, string, error) {
+	session, _ := store.Get(r, "ldap-session")
+	dn, _ := session.Values["dn"].(string)
+	pwd, _ := session.Values["password"].(string)
+	if strings.TrimSpace(dn) == "" || pwd == "" {
+		return "", "", fmt.Errorf("session has no reusable ldap credentials")
+	}
+	return dn, pwd, nil
+}
+
+func connectReplicaTarget(r *http.Request, targetURL, bindDN, bindPwd string) (*ldap.Conn, error) {
+	targetURL = normalizeLDAPURL(targetURL)
+	if targetURL == "" {
+		return nil, fmt.Errorf("missing replica url")
+	}
+	if strings.TrimSpace(bindDN) == "" || bindPwd == "" {
+		sessionDN, sessionPwd, err := getSessionLDAPCredentials(r)
+		if err != nil {
+			return nil, fmt.Errorf("missing bind credentials for replica and current session cannot be reused")
+		}
+		bindDN = sessionDN
+		bindPwd = sessionPwd
+	}
+	conn, err := dialLDAP(targetURL, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("ldap dial failed: %w", err)
+	}
+	if err := conn.Bind(bindDN, bindPwd); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ldap bind failed: %w", err)
+	}
+	return conn, nil
+}
+
 func loadSchemaDef(conn ldapSearcher) (SchemaDef, error) {
 	req := ldap.NewSearchRequest("cn=schema,cn=config", ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"olcObjectClasses", "olcAttributeTypes", "cn"}, nil)
 	res, err := conn.Search(req)
@@ -329,6 +471,96 @@ func (a *App) handleApiSchemaManagerList(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schemaDef)
+}
+
+func (a *App) handleApiSchemaReplicasList(w http.ResponseWriter, r *http.Request) {
+	conn, err := getLDAPConn(w, r, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	targets, err := detectReplicaTargets(conn, a.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(targets)
+}
+
+func (a *App) handleApiReplicaSchemaManagerList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		URL     string `json:"url"`
+		BindDN  string `json:"bindDn"`
+		BindPwd string `json:"bindPwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	conn, err := connectReplicaTarget(r, req.URL, req.BindDN, req.BindPwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	schemaDef, err := loadSchemaDef(conn)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schemaDef)
+}
+
+func (a *App) handleApiReplicaSchemaManagerModify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		URL       string   `json:"url"`
+		BindDN    string   `json:"bindDn"`
+		BindPwd   string   `json:"bindPwd"`
+		DN        string   `json:"dn"`
+		Attribute string   `json:"attribute"`
+		Values    []string `json:"values"`
+		AdminDN   string   `json:"adminDn"`
+		AdminPwd  string   `json:"adminPwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	connectDN := req.BindDN
+	connectPwd := req.BindPwd
+	if strings.TrimSpace(req.AdminDN) != "" && req.AdminPwd != "" {
+		connectDN = req.AdminDN
+		connectPwd = req.AdminPwd
+	}
+	conn, err := connectReplicaTarget(r, req.URL, connectDN, connectPwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	defer conn.Close()
+
+	modifyReq := ldap.NewModifyRequest(req.DN, nil)
+	modifyReq.Add(req.Attribute, req.Values)
+	if err := conn.Modify(modifyReq); err != nil {
+		http.Error(w, "Failed to modify replica schema: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (a *App) handleApiSchemaManagerModify(w http.ResponseWriter, r *http.Request) {

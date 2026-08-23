@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-ldap/ldap/v3"
+)
 
 func TestParseObjectClassExtractsReadableMetadata(t *testing.T) {
 	def := "( 1.2.840.113556.1.5.9 NAME ( 'groupOfNames' 'group' ) DESC 'Group of names' SUP top STRUCTURAL MUST ( cn $ member ) MAY ( description $ owner ) )"
@@ -59,5 +66,45 @@ func TestEncodeBinaryAttributeValueUsesBase64PrefixForNonImages(t *testing.T) {
 	encoded := encodeBinaryAttributeValue("objectGUID", []byte{0x00, 0x01, 0x02, 0x03})
 	if len(encoded) < 7 || encoded[:7] != "base64:" {
 		t.Fatalf("expected base64 prefix, got %q", encoded)
+	}
+}
+
+func TestDetectReplicaTargetsFindsPeersFromConfig(t *testing.T) {
+	fake := &fakeSchemaUIConn{search: func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+		if req.BaseDN != "cn=config" {
+			t.Fatalf("BaseDN = %q, want cn=config", req.BaseDN)
+		}
+		return &ldap.SearchResult{Entries: []*ldap.Entry{
+			ldap.NewEntry("cn=config", map[string][]string{
+				"olcServerID": {"1 ldap://main.example.com", "2 ldaps://replica1.example.com"},
+			}),
+			ldap.NewEntry("olcDatabase={1}mdb,cn=config", map[string][]string{
+				"olcSyncRepl": {"rid=001 provider=ldap://replica2.example.com bindmethod=simple binddn=\"cn=admin,dc=example,dc=com\" credentials=secret searchbase=\"dc=example,dc=com\""},
+			}),
+		}}, nil
+	}}
+
+	targets, err := detectReplicaTargets(fake, Config{LDAPServer: "ldap://main.example.com"})
+	if err != nil {
+		t.Fatalf("detectReplicaTargets() error = %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %#v", targets)
+	}
+	if targets[0].URL != "ldaps://replica1.example.com" && targets[1].URL != "ldaps://replica1.example.com" {
+		t.Fatalf("expected replica1 target in %#v", targets)
+	}
+	if targets[0].URL != "ldap://replica2.example.com" && targets[1].URL != "ldap://replica2.example.com" {
+		t.Fatalf("expected replica2 target in %#v", targets)
+	}
+}
+
+func TestHandleApiReplicaSchemaManagerListRejectsMissingReplicaCredentialsWithoutReusableSession(t *testing.T) {
+	app := &App{}
+	req := httptest.NewRequest(http.MethodPost, "/api/schema_replica", strings.NewReader(`{"url":"ldap://replica.example.com"}`))
+	rec := httptest.NewRecorder()
+	app.handleApiReplicaSchemaManagerList(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

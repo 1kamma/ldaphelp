@@ -72,6 +72,9 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 		"const syncExpander = (state) => {",
 		"childrenUl.innerHTML = '';",
 		"loaded = false;",
+		"Replication Peers",
+		"/api/schema_replicas",
+		"/api/schema_replica",
 	}
 	for _, check := range checks {
 		if !strings.Contains(body, check) {

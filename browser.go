@@ -232,7 +232,7 @@ func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
 	var roots []TreeNode
 
 	if a.cfg.Base != "" {
-		roots = append(roots, TreeNode{DN: a.cfg.Base, RDN: a.cfg.Base, ObjectClasses: []string{"domain"}, HasChildren: true})
+		roots = append(roots, TreeNode{DN: a.cfg.Base, RDN: a.cfg.Base, ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, a.cfg.Base)})
 	}
 
 	if err == nil && len(res.Entries) > 0 {
@@ -240,17 +240,17 @@ func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
 
 		for _, nc := range entry.GetAttributeValues("namingContexts") {
 			if a.cfg.Base == "" || nc != a.cfg.Base {
-				roots = append(roots, TreeNode{DN: nc, RDN: nc, ObjectClasses: []string{"domain"}, HasChildren: true})
+				roots = append(roots, TreeNode{DN: nc, RDN: nc, ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, nc)})
 			}
 		}
 		if sub := entry.GetAttributeValue("subschemaSubentry"); sub != "" {
-			roots = append(roots, TreeNode{DN: sub, RDN: "Schema (" + sub + ")", ObjectClasses: []string{"subschema"}, HasChildren: true})
+			roots = append(roots, TreeNode{DN: sub, RDN: "Schema (" + sub + ")", ObjectClasses: []string{"subschema"}, HasChildren: entryHasChildren(conn, sub)})
 		}
 		if mon := entry.GetAttributeValue("monitorContext"); mon != "" {
-			roots = append(roots, TreeNode{DN: mon, RDN: "Monitor (" + mon + ")", ObjectClasses: []string{"monitor"}, HasChildren: true})
+			roots = append(roots, TreeNode{DN: mon, RDN: "Monitor (" + mon + ")", ObjectClasses: []string{"monitor"}, HasChildren: entryHasChildren(conn, mon)})
 		}
 		if cfgCtx := entry.GetAttributeValue("configContext"); cfgCtx != "" {
-			roots = append(roots, TreeNode{DN: cfgCtx, RDN: "Config (" + cfgCtx + ")", ObjectClasses: []string{"domain"}, HasChildren: true})
+			roots = append(roots, TreeNode{DN: cfgCtx, RDN: "Config (" + cfgCtx + ")", ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, cfgCtx)})
 		}
 	}
 
@@ -298,7 +298,7 @@ func (a *App) handleApiChildren(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(children)
 }
 
-func entryHasChildren(conn *ldap.Conn, dn string) bool {
+func entryHasChildren(conn ldapSearcher, dn string) bool {
 	if conn == nil || dn == "" {
 		return false
 	}
@@ -2862,8 +2862,9 @@ const browseHTML = `<!doctype html>
             </div>
         </div>
         <div class="header-actions" style="margin-bottom:20px; justify-content:flex-start;">
-            <button hx-get="/ui/schema/object-classes" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
-            <button hx-get="/ui/schema/attribute-types" hx-target="#schema-content" hx-swap="innerHTML" onclick="prepareSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
+            <button onclick="showLocalSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
+            <button onclick="showLocalSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
+            <button onclick="showReplicaTargets()" style="background:#2563eb;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Replication Peers</button>
         </div>
         <div id="schema-admin-login" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
             <h3>Schema Admin Login</h3>
@@ -2874,6 +2875,7 @@ const browseHTML = `<!doctype html>
         </div>
         <div id="schema-add-form" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
             <h3>Add New Schema Item</h3>
+            <div id="schema-target-note" style="font-size:12px;color:#93c5fd;margin-bottom:10px;display:none;"></div>
             <input type="text" id="schema-dn" placeholder="DN (e.g., cn={1}core,cn=schema,cn=config)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
             <input type="text" id="schema-attr" placeholder="Attribute (e.g., olcObjectClasses)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
             <textarea id="schema-value" placeholder="Raw Definition Value" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;min-height:100px;"></textarea>
@@ -2890,14 +2892,19 @@ const browseHTML = `<!doctype html>
 <script>
 function showSchemaManager() {
     document.getElementById('schema-modal').style.display = 'flex';
-    prepareSchemaTab('olcObjectClasses');
-    if (window.htmx) {
-        htmx.ajax('GET', '/ui/schema/object-classes', { target: '#schema-content', swap: 'innerHTML' });
-    }
+    showLocalSchemaTab('olcObjectClasses');
 }
 
 let tempAdminDN = '';
 let tempAdminPwd = '';
+let detectedReplicaTargets = [];
+const schemaViewState = {
+    mode: 'local',
+    currentAttr: 'olcObjectClasses',
+    replicaURL: '',
+    bindDN: '',
+    bindPwd: '',
+};
 
 function unlockSchemaEdit() {
     tempAdminDN = document.getElementById('schema-admin-dn').value;
@@ -2909,7 +2916,19 @@ function unlockSchemaEdit() {
 }
 
 function prepareSchemaTab(attr) {
+    schemaViewState.currentAttr = attr;
     document.getElementById('schema-attr').value = attr;
+}
+
+function updateSchemaTargetNote() {
+    const note = document.getElementById('schema-target-note');
+    if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+        note.textContent = 'Target replica: ' + schemaViewState.replicaURL;
+        note.style.display = 'block';
+    } else {
+        note.textContent = '';
+        note.style.display = 'none';
+    }
 }
 
 function applySchemaEditState() {
@@ -2925,6 +2944,125 @@ function applySchemaEditState() {
     if (root && root.dataset.schemaAttr) {
         document.getElementById('schema-attr').value = root.dataset.schemaAttr;
     }
+    updateSchemaTargetNote();
+}
+
+function showLocalSchemaTab(attr) {
+    schemaViewState.mode = 'local';
+    schemaViewState.replicaURL = '';
+    schemaViewState.bindDN = '';
+    schemaViewState.bindPwd = '';
+    prepareSchemaTab(attr);
+    if (window.htmx) {
+        const endpoint = attr === 'olcAttributeTypes' ? '/ui/schema/attribute-types' : '/ui/schema/object-classes';
+        htmx.ajax('GET', endpoint, { target: '#schema-content', swap: 'innerHTML' });
+    }
+}
+
+function renderSchemaManagerData(schemaDef, attr) {
+    const objectClasses = Array.isArray(schemaDef.objectClasses) ? schemaDef.objectClasses : [];
+    const attributeTypes = Array.isArray(schemaDef.attributeTypes) ? schemaDef.attributeTypes : [];
+    const cards = (attr === 'olcAttributeTypes' ? attributeTypes : objectClasses).map(item => {
+        if (attr === 'olcAttributeTypes') {
+            return '<div class="schema-card">' +
+                '<h4>' + escapeHTML(item.name || 'Unnamed') + '</h4>' +
+                '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + escapeHTML(item.dn || '') + '</div>' +
+                '<div style="margin-bottom:8px;">' +
+                (item.oid ? '<span class="type-badge">OID ' + escapeHTML(item.oid) + '</span>' : '') +
+                (item.singleValue ? '<span class="type-badge">SINGLE-VALUE</span>' : '') +
+                '</div>' +
+                ((item.aliases || []).length > 1 ? '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + item.aliases.slice(1).map(a => '<span class="type-badge">' + escapeHTML(a) + '</span>').join('') + '</div>' : '') +
+                (item.desc ? '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + escapeHTML(item.desc) + '</div>' : '') +
+                (item.syntax ? '<div style="margin-bottom:8px;"><strong>Syntax:</strong> <span class="type-badge" style="font-family:monospace;">' + escapeHTML(item.syntax) + '</span></div>' : '') +
+                '<details style="margin-top:10px;"><summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary><pre class="schema-raw">' + escapeHTML(item.raw || '') + '</pre></details>' +
+                '</div>';
+        }
+        return '<div class="schema-card">' +
+            '<h4>' + escapeHTML(item.name || 'Unnamed') + '</h4>' +
+            '<div style="font-size:12px;color:#888;margin-bottom:10px;word-break:break-all;"><strong>DN:</strong> ' + escapeHTML(item.dn || '') + '</div>' +
+            '<div style="margin-bottom:8px;">' +
+            (item.oid ? '<span class="type-badge">OID ' + escapeHTML(item.oid) + '</span>' : '') +
+            '<span class="type-badge">' + escapeHTML(item.kind || 'STRUCTURAL') + '</span>' +
+            '</div>' +
+            ((item.aliases || []).length > 1 ? '<div style="margin-bottom:8px;"><strong>Aliases:</strong> ' + item.aliases.slice(1).map(a => '<span class="type-badge">' + escapeHTML(a) + '</span>').join('') + '</div>' : '') +
+            (item.desc ? '<div style="margin-bottom:8px;"><strong>Description:</strong> ' + escapeHTML(item.desc) + '</div>' : '') +
+            ((item.sup || []).length ? '<div style="margin-bottom:8px;"><strong>SUP:</strong> ' + item.sup.map(a => '<span class="type-badge">' + escapeHTML(a) + '</span>').join('') + '</div>' : '') +
+            ((item.must || []).length ? '<div style="margin-bottom:8px;"><strong>MUST:</strong> ' + item.must.map(a => '<span class="type-badge">' + escapeHTML(a) + '</span>').join('') + '</div>' : '') +
+            ((item.may || []).length ? '<div style="margin-bottom:8px;"><strong>MAY:</strong> ' + item.may.map(a => '<span class="type-badge">' + escapeHTML(a) + '</span>').join('') + '</div>' : '') +
+            '<details style="margin-top:10px;"><summary style="cursor:pointer;color:#888;font-size:12px;">Raw Definition</summary><pre class="schema-raw">' + escapeHTML(item.raw || '') + '</pre></details>' +
+            '</div>';
+    }).join('');
+
+    document.getElementById('schema-content').innerHTML = '<div id="schema-fragment-root" data-can-edit="' + (schemaDef.canEdit ? 'true' : 'false') + '" data-schema-attr="' + escapeHTML(attr) + '" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(min(100%, 320px), 1fr));gap:20px;">' + cards + '</div>';
+    applySchemaEditState();
+}
+
+async function loadReplicaSchema(url, bindDn, bindPwd, attr) {
+    prepareSchemaTab(attr);
+    schemaViewState.mode = 'replica';
+    schemaViewState.replicaURL = url;
+    schemaViewState.bindDN = bindDn || '';
+    schemaViewState.bindPwd = bindPwd || '';
+    document.getElementById('schema-content').innerHTML = '<div class="schema-card">Loading replica schema from ' + escapeHTML(url) + '...</div>';
+    const res = await fetch('/api/schema_replica', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ url: url, bindDn: bindDn || '', bindPwd: bindPwd || '' })
+    });
+    if (!res.ok) {
+        document.getElementById('schema-content').innerHTML = '<div class="schema-card">Failed to load replica schema: ' + escapeHTML(await res.text()) + '</div>';
+        applySchemaEditState();
+        return;
+    }
+    const data = await res.json();
+    renderSchemaManagerData(data, attr);
+}
+
+function loadReplicaSchemaFromInputs(index, attr) {
+    const bindDn = document.getElementById('replica-bind-dn-' + index).value;
+    const bindPwd = document.getElementById('replica-bind-pwd-' + index).value;
+    const target = detectedReplicaTargets[index];
+    if (!target) return;
+    loadReplicaSchema(target.url, bindDn, bindPwd, attr);
+}
+
+function renderReplicaTargets(targets) {
+    detectedReplicaTargets = targets || [];
+    if (!detectedReplicaTargets.length) {
+        document.getElementById('schema-content').innerHTML = '<div class="schema-card"><h4>No replication peers detected</h4><div>Best-effort discovery looks at replication metadata in <code>cn=config</code> such as <code>olcServerID</code> and <code>olcSyncRepl</code>.</div></div>';
+        applySchemaEditState();
+        return;
+    }
+    document.getElementById('schema-content').innerHTML = detectedReplicaTargets.map((target, idx) => {
+        return '<div class="schema-card">' +
+            '<h4>' + escapeHTML(target.label || target.url) + '</h4>' +
+            '<div style="font-size:12px;opacity:0.8;overflow-wrap:anywhere;">' + escapeHTML(target.url) + '</div>' +
+            '<div style="font-size:12px;opacity:0.8;margin-top:4px;">Detected via ' + escapeHTML(target.source || 'config') + '</div>' +
+            (target.dn ? '<div style="font-size:12px;opacity:0.7;overflow-wrap:anywhere;margin-top:4px;">' + escapeHTML(target.dn) + '</div>' : '') +
+            '<input type="text" id="replica-bind-dn-' + idx + '" placeholder="Bind DN (optional, current session reused if possible)" style="width:100%;margin-top:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />' +
+            '<input type="password" id="replica-bind-pwd-' + idx + '" placeholder="Bind Password (optional)" style="width:100%;margin-top:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />' +
+            '<div class="header-actions" style="margin-top:10px;justify-content:flex-start;">' +
+            '<button onclick="loadReplicaSchemaFromInputs(' + idx + ', \"olcObjectClasses\")" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Load Object Classes</button>' +
+            '<button onclick="loadReplicaSchemaFromInputs(' + idx + ', \"olcAttributeTypes\")" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Load Attribute Types</button>' +
+            '</div>' +
+            '</div>';
+    }).join('');
+    document.getElementById('schema-add-form').style.display = 'none';
+    document.getElementById('schema-admin-login').style.display = 'none';
+    updateSchemaTargetNote();
+}
+
+async function showReplicaTargets() {
+    schemaViewState.mode = 'replica';
+    schemaViewState.replicaURL = '';
+    document.getElementById('schema-content').innerHTML = '<div class="schema-card">Detecting replication peers...</div>';
+    const res = await fetch('/api/schema_replicas');
+    if (!res.ok) {
+        document.getElementById('schema-content').innerHTML = '<div class="schema-card">Failed to detect replication peers: ' + escapeHTML(await res.text()) + '</div>';
+        return;
+    }
+    const data = await res.json();
+    renderReplicaTargets(data);
 }
 
 document.body.addEventListener('htmx:afterSwap', function (evt) {
@@ -2949,8 +3087,15 @@ async function addSchemaItem() {
             payload.adminDn = tempAdminDN;
             payload.adminPwd = tempAdminPwd;
         }
+        let endpoint = '/api/schema_modify';
+        if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+            endpoint = '/api/schema_replica_modify';
+            payload.url = schemaViewState.replicaURL;
+            payload.bindDn = schemaViewState.bindDN || '';
+            payload.bindPwd = schemaViewState.bindPwd || '';
+        }
 
-        const res = await fetch('/api/schema_modify', {
+        const res = await fetch(endpoint, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
@@ -2958,7 +3103,11 @@ async function addSchemaItem() {
         if (res.ok) {
             alert('Added successfully!');
             document.getElementById('schema-value').value = '';
-            loadSchema(attr === 'olcObjectClasses' ? 'objectClasses' : 'attributeTypes');
+            if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+                loadReplicaSchema(schemaViewState.replicaURL, schemaViewState.bindDN, schemaViewState.bindPwd, attr);
+            } else {
+                showLocalSchemaTab(attr);
+            }
         } else {
             const err = await res.text();
             alert('Failed: ' + err);
