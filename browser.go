@@ -232,7 +232,7 @@ func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
 	var roots []TreeNode
 
 	if a.cfg.Base != "" {
-		roots = append(roots, TreeNode{DN: a.cfg.Base, RDN: a.cfg.Base, ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, a.cfg.Base)})
+		roots = append(roots, TreeNode{DN: a.cfg.Base, RDN: a.cfg.Base, ObjectClasses: []string{"domain"}, HasChildren: rootEntryHasChildren(conn, a.cfg.Base)})
 	}
 
 	if err == nil && len(res.Entries) > 0 {
@@ -240,17 +240,17 @@ func (a *App) handleApiRoots(w http.ResponseWriter, r *http.Request) {
 
 		for _, nc := range entry.GetAttributeValues("namingContexts") {
 			if a.cfg.Base == "" || nc != a.cfg.Base {
-				roots = append(roots, TreeNode{DN: nc, RDN: nc, ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, nc)})
+				roots = append(roots, TreeNode{DN: nc, RDN: nc, ObjectClasses: []string{"domain"}, HasChildren: rootEntryHasChildren(conn, nc)})
 			}
 		}
 		if sub := entry.GetAttributeValue("subschemaSubentry"); sub != "" {
 			roots = append(roots, TreeNode{DN: sub, RDN: "Schema (" + sub + ")", ObjectClasses: []string{"subschema"}, HasChildren: entryHasChildren(conn, sub)})
 		}
 		if mon := entry.GetAttributeValue("monitorContext"); mon != "" {
-			roots = append(roots, TreeNode{DN: mon, RDN: "Monitor (" + mon + ")", ObjectClasses: []string{"monitor"}, HasChildren: entryHasChildren(conn, mon)})
+			roots = append(roots, TreeNode{DN: mon, RDN: "Monitor (" + mon + ")", ObjectClasses: []string{"monitor"}, HasChildren: rootEntryHasChildren(conn, mon)})
 		}
 		if cfgCtx := entry.GetAttributeValue("configContext"); cfgCtx != "" {
-			roots = append(roots, TreeNode{DN: cfgCtx, RDN: "Config (" + cfgCtx + ")", ObjectClasses: []string{"domain"}, HasChildren: entryHasChildren(conn, cfgCtx)})
+			roots = append(roots, TreeNode{DN: cfgCtx, RDN: "Config (" + cfgCtx + ")", ObjectClasses: []string{"domain"}, HasChildren: rootEntryHasChildren(conn, cfgCtx)})
 		}
 	}
 
@@ -285,11 +285,12 @@ func (a *App) handleApiChildren(w http.ResponseWriter, r *http.Request) {
 		if idx := strings.Index(rdn, ","); idx != -1 {
 			rdn = rdn[:idx]
 		}
-		hasChildren := entryHasChildren(conn, entry.DN)
+		objectClasses := entry.GetAttributeValues("objectClass")
+		hasChildren := childEntryHasChildren(conn, entry.DN, objectClasses)
 		children = append(children, TreeNode{
 			DN:            entry.DN,
 			RDN:           rdn,
-			ObjectClasses: entry.GetAttributeValues("objectClass"),
+			ObjectClasses: objectClasses,
 			HasChildren:   hasChildren,
 		})
 	}
@@ -298,15 +299,41 @@ func (a *App) handleApiChildren(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(children)
 }
 
-func entryHasChildren(conn ldapSearcher, dn string) bool {
+func entryHasChildrenKnown(conn ldapSearcher, dn string) (bool, bool) {
 	if conn == nil || dn == "" {
-		return false
+		return false, true
 	}
-	res, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", []string{"dn"}, nil))
+	res, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", []string{"objectClass"}, nil))
 	if err != nil {
-		return false
+		return false, false
 	}
-	return len(res.Entries) > 0
+	return len(res.Entries) > 0, true
+}
+
+func entryHasChildren(conn ldapSearcher, dn string) bool {
+	hasChildren, known := entryHasChildrenKnown(conn, dn)
+	return known && hasChildren
+}
+
+func childEntryHasChildren(conn ldapSearcher, dn string, objectClasses []string) bool {
+	for _, oc := range objectClasses {
+		if strings.EqualFold(strings.TrimSpace(oc), "subschema") {
+			return entryHasChildren(conn, dn)
+		}
+	}
+	hasChildren, known := entryHasChildrenKnown(conn, dn)
+	if !known {
+		return true
+	}
+	return hasChildren
+}
+
+func rootEntryHasChildren(conn ldapSearcher, dn string) bool {
+	hasChildren, known := entryHasChildrenKnown(conn, dn)
+	if !known {
+		return true
+	}
+	return hasChildren
 }
 
 func (a *App) handleApiSettingsGet(w http.ResponseWriter, r *http.Request) {
