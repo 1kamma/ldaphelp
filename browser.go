@@ -285,16 +285,28 @@ func (a *App) handleApiChildren(w http.ResponseWriter, r *http.Request) {
 		if idx := strings.Index(rdn, ","); idx != -1 {
 			rdn = rdn[:idx]
 		}
+		hasChildren := entryHasChildren(conn, entry.DN)
 		children = append(children, TreeNode{
 			DN:            entry.DN,
 			RDN:           rdn,
 			ObjectClasses: entry.GetAttributeValues("objectClass"),
-			HasChildren:   true, // Assuming it has children for lazy loading, frontend will handle empty nodes
+			HasChildren:   hasChildren,
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(children)
+}
+
+func entryHasChildren(conn *ldap.Conn, dn string) bool {
+	if conn == nil || dn == "" {
+		return false
+	}
+	res, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", []string{"dn"}, nil))
+	if err != nil {
+		return false
+	}
+	return len(res.Entries) > 0
 }
 
 func (a *App) handleApiSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -1797,6 +1809,12 @@ const browseHTML = `<!doctype html>
         let expanded = false;
         let loaded = false;
 
+        const syncExpander = (state) => {
+            expander.textContent = state ? '▶' : ' ';
+        };
+
+        syncExpander(nodeData.hasChildren);
+
         expander.onclick = async () => {
             if (!nodeData.hasChildren) return;
             if (!expanded) {
@@ -1805,18 +1823,24 @@ const browseHTML = `<!doctype html>
                     const res = await fetch('/api/children?dn=' + encodeURIComponent(nodeData.dn));
                     if (res.ok) {
                         const children = await res.json();
+                        childrenUl.innerHTML = '';
                         if (children && children.length > 0) {
                             children.sort((a, b) => a.rdn.localeCompare(b.rdn)).forEach(c => childrenUl.appendChild(createNode(c)));
+                            nodeData.hasChildren = true;
                             expander.textContent = '▼';
+                            loaded = true;
                         } else {
-                            expander.textContent = ' ';
                             nodeData.hasChildren = false;
+                            loaded = false;
+                            childrenUl.style.display = 'none';
+                            syncExpander(false);
+                            return;
                         }
                     } else {
-                        expander.textContent = '▶';
+                        syncExpander(true);
                         alert('Failed to load children');
+                        return;
                     }
-                    loaded = true;
                 } else {
                     expander.textContent = '▼';
                 }
@@ -1824,8 +1848,10 @@ const browseHTML = `<!doctype html>
                 expanded = true;
             } else {
                 childrenUl.style.display = 'none';
-                expander.textContent = '▶';
+                childrenUl.innerHTML = '';
+                loaded = false;
                 expanded = false;
+                syncExpander(true);
             }
         };
 

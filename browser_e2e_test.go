@@ -69,6 +69,9 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 		"consumeLongPressClick",
 		"Remove from group",
 		"Binary value (base64)",
+		"const syncExpander = (state) => {",
+		"childrenUl.innerHTML = '';",
+		"loaded = false;",
 	}
 	for _, check := range checks {
 		if !strings.Contains(body, check) {
