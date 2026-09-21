@@ -1622,6 +1622,46 @@ const browseHTML = `<!doctype html>
         el.addEventListener('touchcancel', clearLongPress, { passive: true });
     }
 
+    function buildEntryActions(dn, objectClasses) {
+        const actions = [];
+        objectClasses = objectClasses || [];
+
+        if (settings && settings.ui && settings.ui.context_menu) {
+            settings.ui.context_menu.forEach(item => {
+                actions.push({
+                    name: item.name,
+                    action: () => new Function('dn', item.action).bind(null, dn)(),
+                });
+            });
+        }
+
+        const typeActions = resolveTypeActions(objectClasses);
+        if (typeActions.add_organizational_unit) {
+            actions.push({ name: 'Add OrganizationalUnit', action: () => alert('Add OU under ' + dn) });
+        }
+        if (typeActions.add_credential) {
+            actions.push({ name: 'Add Credential', action: () => showAddCredentialModal(dn) });
+        }
+        if (typeActions.set_password) {
+            actions.push({ name: 'Set Password', action: () => setPassword(dn) });
+        }
+        if (typeActions.add_to_posix_group) {
+            actions.push({ name: 'Add to posixGroup', action: () => showGroupSelector('posixGroup', dn) });
+        }
+        if (typeActions.add_to_group_of_names) {
+            actions.push({ name: 'Add to groupOfNames', action: () => showGroupSelector('groupOfNames', dn) });
+        }
+        if (typeActions.add_members) {
+            if (objectClasses.some(c => String(c).toLowerCase() === 'posixgroup')) {
+                actions.push({ name: 'Add members', action: () => showMemberSelector('posixGroup', dn) });
+            }
+            if (objectClasses.some(c => String(c).toLowerCase() === 'groupofnames')) {
+                actions.push({ name: 'Add members', action: () => showMemberSelector('groupOfNames', dn) });
+            }
+        }
+        return actions;
+    }
+
     async function loadRoots() {
         const res = await fetch('/api/roots');
         if (!res.ok) {
@@ -1653,7 +1693,10 @@ const browseHTML = `<!doctype html>
         const q = document.getElementById('ldap-search-q').value.trim();
         const filter = document.getElementById('ldap-search-filter').value.trim();
         const base = document.getElementById('ldap-search-base').value.trim();
-        const attrs = document.getElementById('ldap-search-attrs').value.trim();
+        let attrs = document.getElementById('ldap-search-attrs').value.trim();
+        if (!attrs) {
+            attrs = 'objectClass,cn,uid,mail,displayName';
+        }
         const scope = document.getElementById('ldap-search-scope').value;
         const limit = document.getElementById('ldap-search-limit').value.trim();
 
@@ -1697,10 +1740,21 @@ const browseHTML = `<!doctype html>
             div.className = 'search-result';
             const label = firstAttr(entry.attributes, ['cn', 'uid', 'mail', 'displayName']) || entry.dn.split(',')[0];
             div.textContent = label;
+            div.dataset.dn = entry.dn;
+            div.dataset.objectClasses = JSON.stringify(entry.attributes && entry.attributes.objectClass ? entry.attributes.objectClass : []);
             const dn = document.createElement('small');
             dn.textContent = entry.dn;
             div.appendChild(dn);
-            div.onclick = () => loadEntry(entry.dn);
+            div.onclick = (event) => {
+                if (consumeLongPressClick(div, event)) return;
+                openSearchResultEntry(entry);
+            };
+            div.oncontextmenu = (event) => {
+                event.preventDefault();
+                openSearchResultEntry(entry);
+                showContextMenuAt(event.pageX, event.pageY, buildEntryActions(entry.dn, (entry.attributes && entry.attributes.objectClass) || []));
+            };
+            attachLongPressContextMenu(div, () => buildEntryActions(entry.dn, (entry.attributes && entry.attributes.objectClass) || []));
             resultsDiv.appendChild(div);
         });
 
@@ -1711,6 +1765,101 @@ const browseHTML = `<!doctype html>
             errors.textContent = 'Some bases failed: ' + data.errors.join('; ');
             resultsDiv.appendChild(errors);
         }
+    }
+
+    function normalizeDNForCompare(dn) {
+        return String(dn || '').trim().toLowerCase();
+    }
+
+    function findTreeNodeByDN(dn) {
+        const target = normalizeDNForCompare(dn);
+        let found = null;
+        document.querySelectorAll('.tree-node').forEach(node => {
+            if (!found && normalizeDNForCompare(node.dataset.dn) === target) {
+                found = node;
+            }
+        });
+        return found;
+    }
+
+    function parentDN(dn) {
+        const idx = String(dn || '').indexOf(',');
+        return idx === -1 ? '' : dn.slice(idx + 1);
+    }
+
+    function ancestorDNsFromRoot(dn) {
+        const chain = [];
+        let cur = String(dn || '').trim();
+        while (cur) {
+            chain.unshift(cur);
+            cur = parentDN(cur);
+        }
+        const rootDns = Array.from(document.querySelectorAll('#tree-root > .tree-node')).map(n => n.dataset.dn || '');
+        const firstRootIndex = chain.findIndex(candidate => rootDns.some(root => normalizeDNForCompare(root) === normalizeDNForCompare(candidate)));
+        return firstRootIndex === -1 ? [] : chain.slice(firstRootIndex);
+    }
+
+    function waitForTreeNode(dn, timeoutMs) {
+        return new Promise(resolve => {
+            const existing = findTreeNodeByDN(dn);
+            if (existing) {
+                resolve(existing);
+                return;
+            }
+            const start = Date.now();
+            const timer = setInterval(() => {
+                const node = findTreeNodeByDN(dn);
+                if (node || Date.now() - start >= timeoutMs) {
+                    clearInterval(timer);
+                    resolve(node);
+                }
+            }, 50);
+        });
+    }
+
+    async function expandTreeNode(node) {
+        if (!node || !node._nodeData || !node._nodeData.hasChildren) return;
+        const childrenUl = node.querySelector(':scope > ul.tree-ul');
+        if (childrenUl && childrenUl.style.display === 'block' && childrenUl.children.length > 0) return;
+        const expander = node.querySelector(':scope > .expand-icon');
+        if (!expander) return;
+        expander.click();
+        const start = Date.now();
+        while (Date.now() - start < 2500) {
+            if (!node._nodeData.hasChildren) return;
+            if (childrenUl && childrenUl.style.display === 'block' && childrenUl.children.length > 0) return;
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+    }
+
+    async function revealEntryInTree(dn) {
+        const chain = ancestorDNsFromRoot(dn);
+        if (chain.length === 0) return null;
+        for (let i = 0; i < chain.length - 1; i++) {
+            const node = await waitForTreeNode(chain[i], 500);
+            if (!node) return null;
+            await expandTreeNode(node);
+        }
+        return await waitForTreeNode(dn, 1000);
+    }
+
+    async function selectEntryInTree(dn) {
+        const node = await revealEntryInTree(dn);
+        document.querySelectorAll('.selected').forEach(e => e.classList.remove('selected'));
+        if (!node) return null;
+        const text = node.querySelector(':scope > .item-text');
+        if (text) {
+            text.classList.add('selected');
+            text.scrollIntoView({ block: 'nearest' });
+        }
+        return node;
+    }
+
+    async function openSearchResultEntry(entry) {
+        const dn = entry && entry.dn ? entry.dn : '';
+        if (!dn) return;
+        loadEntry(dn);
+        await selectEntryInTree(dn);
     }
 
     function createNode(nodeData) {
@@ -1778,44 +1927,7 @@ const browseHTML = `<!doctype html>
         const text = document.createElement('span');
         text.className = 'item-text';
         text.textContent = nodeData.rdn || nodeData.dn;
-        const buildTreeNodeActions = () => {
-            const actions = [];
-
-            if (settings && settings.ui && settings.ui.context_menu) {
-                settings.ui.context_menu.forEach(item => {
-                    actions.push({
-                        name: item.name,
-                        action: () => new Function('dn', item.action).bind(null, nodeData.dn)(),
-                    });
-                });
-            }
-
-            const typeActions = resolveTypeActions(nodeData.objectClasses || []);
-            if (typeActions.add_organizational_unit) {
-                actions.push({ name: 'Add OrganizationalUnit', action: () => alert('Add OU under ' + nodeData.dn) });
-            }
-            if (typeActions.add_credential) {
-                actions.push({ name: 'Add Credential', action: () => showAddCredentialModal(nodeData.dn) });
-            }
-            if (typeActions.set_password) {
-                actions.push({ name: 'Set Password', action: () => setPassword(nodeData.dn) });
-            }
-            if (typeActions.add_to_posix_group) {
-                actions.push({ name: 'Add to posixGroup', action: () => showGroupSelector('posixGroup', nodeData.dn) });
-            }
-            if (typeActions.add_to_group_of_names) {
-                actions.push({ name: 'Add to groupOfNames', action: () => showGroupSelector('groupOfNames', nodeData.dn) });
-            }
-            if (typeActions.add_members) {
-                if ((nodeData.objectClasses || []).some(c => c.toLowerCase() === 'posixgroup')) {
-                    actions.push({ name: 'Add members', action: () => showMemberSelector('posixGroup', nodeData.dn) });
-                }
-                if ((nodeData.objectClasses || []).some(c => c.toLowerCase() === 'groupofnames')) {
-                    actions.push({ name: 'Add members', action: () => showMemberSelector('groupOfNames', nodeData.dn) });
-                }
-            }
-            return actions;
-        };
+        const buildTreeNodeActions = () => buildEntryActions(nodeData.dn, nodeData.objectClasses || []);
 
         text.onclick = (e) => {
             if (consumeLongPressClick(text, e)) return;
