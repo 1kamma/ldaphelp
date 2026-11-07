@@ -83,6 +83,35 @@ func TestHandleBrowseRendersUpdatedSettingsAndGroupModal(t *testing.T) {
 	}
 }
 
+func TestHandleBrowseRendersMobileLayoutAndEditors(t *testing.T) {
+	body := renderBrowseBody(t)
+	checks := []string{
+		`aria-label="Layout controls"`,
+		`id="toggle-tree" aria-controls="tree-panel"`,
+		`id="toggle-search" aria-controls="ldap-search"`,
+		`id="toggle-menu" aria-controls="top-menu"`,
+		`[hidden] { display: none !important; }`,
+		`search:!phoneLayout.matches, menu:!phoneLayout.matches`,
+		`sidebar.hidden = !panelState.tree && !panelState.search`,
+		`setAttribute('aria-expanded', String(panelState[name]))`,
+		`#entry-attrs thead { display:none; }`,
+		`min-width:0;`,
+		`input.className = 'attribute-editor'`,
+		`input.setAttribute('aria-label', 'Values for ' + attr)`,
+		`help.textContent = 'One value per line'`,
+		`remove.textContent = 'Remove attribute'`,
+		`cell.parentElement.style.display = ''`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Errorf("expected mobile browse HTML to contain %q", check)
+		}
+	}
+	if strings.Contains(body, "min-width: 520px") {
+		t.Error("mobile tables must not force desktop width")
+	}
+}
+
 func TestHandleBrowseDoesNotDuplicateOcKeyDeclaration(t *testing.T) {
 	body := renderBrowseBody(t)
 	if count := strings.Count(body, "const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');"); count != 1 {

@@ -515,45 +515,80 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		tmpl := template.Must(template.New("login").Parse(`
 		<!doctype html>
-		<html>
+		<html lang="en">
 		<head>
 		  <meta charset="utf-8">
+		  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+		  <meta name="color-scheme" content="dark">
 		  <title>LDAP Login</title>
-		  <link rel="icon" href="{{.AssetURL.Favicon}}">
+		  {{if .AssetURL.Favicon}}<link rel="icon" href="{{.AssetURL.Favicon}}">{{end}}
 		  <style>
-		    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #121212; color: #e0e0e0; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-		    .login-container { background: #1e1e1e; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); width: 100%; max-width: 320px; border: 1px solid #333; }
-		    h2 { margin-top: 0; margin-bottom: 24px; text-align: center; color: #fff; }
-		    .form-group { margin-bottom: 16px; }
-		    label { display: block; margin-bottom: 8px; font-size: 14px; color: #bbb; }
-		    input[type="text"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #fff; box-sizing: border-box; }
-		    input[type="text"]:focus, input[type="password"]:focus { outline: none; border-color: #3b82f6; }
-		    button { width: 100%; padding: 12px; background: #3b82f6; color: #fff; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; margin-top: 8px; font-weight: bold; }
-		    button:hover { background: #2563eb; }
-		    .error { color: #ef4444; background: #7f1d1d; padding: 10px; border-radius: 4px; margin-bottom: 16px; font-size: 14px; text-align: center; border: 1px solid #991b1b; }
+		    :root { color-scheme: dark; }
+		    * { box-sizing: border-box; }
+		    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #121212; color: #e0e0e0; margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; padding: 24px 16px; padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); line-height: 1.5; }
+		    .login-container { background: #1e1e1e; width: 100%; max-width: 440px; min-width: 0; margin: auto; padding: clamp(20px, 5vw, 36px); border: 1px solid #383838; border-radius: 16px; box-shadow: 0 16px 48px rgba(0,0,0,0.3); overflow-wrap: anywhere; }
+		    .login-header { text-align: center; margin-bottom: 28px; }
+		    .login-logo { display: block; width: 72px; height: 72px; object-fit: contain; border-radius: 50%; margin: 0 auto 16px; }
+		    h1 { margin: 0; color: #fff; font-size: 26px; line-height: 1.25; }
+		    .subtitle { margin: 8px 0 0; color: #b8b8b8; font-size: 14px; }
+		    .form-group { margin-bottom: 20px; }
+		    label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; color: #d4d4d4; }
+		    input { width: 100%; min-width: 0; min-height: 48px; padding: 12px; border: 1px solid #666; border-radius: 8px; background: #292929; color: #fff; font: inherit; font-size: 16px; scroll-margin-block: 24px; }
+		    input:focus { border-color: #93c5fd; }
+		    input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+		    .password-field { display: flex; align-items: center; gap: 8px; }
+		    button, .sso-button { min-height: 48px; padding: 12px 16px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; touch-action: manipulation; }
+		    .submit-button { width: 100%; background: #2563eb; color: #fff; }
+		    .submit-button:hover { background: #1d4ed8; }
+		    .password-toggle { flex: 0 0 auto; padding-inline: 12px; background: #303030; color: #e0e0e0; border-color: #666; font-size: 14px; }
+		    .password-toggle:hover, .sso-button:hover { background: #383838; border-color: #999; }
+		    .recovery { text-align: center; margin-top: 12px; }
+		    .recovery-button { background: transparent; color: #93c5fd; font-size: 14px; font-weight: 400; text-decoration: underline; text-underline-offset: 3px; }
+		    .recovery-button:hover { color: #bfdbfe; }
+		    .sso-options { display: grid; gap: 12px; }
+		    .sso-heading { display: flex; align-items: center; gap: 12px; margin: 24px 0 16px; color: #b8b8b8; font-size: 14px; text-align: center; }
+		    .sso-heading::before, .sso-heading::after { content: ""; flex: 1; border-top: 1px solid #444; }
+		    .sso-button { display: block; text-align: center; text-decoration: none; background: #292929; color: #e0e0e0; border-color: #666; }
+		    .error { color: #fecaca; background: #450a0a; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; border: 1px solid #b91c1c; }
+		    @media (max-height: 600px) { .login-header { margin-bottom: 20px; } .login-logo { width: 48px; height: 48px; margin-bottom: 12px; } }
 		  </style>
 		</head>
 		<body>
-			<div class="login-container">
-				<div style="text-align:center;margin-bottom:20px;"><img src="{{.AssetURL.Logo}}" alt="Logo" style="width:100px;height:100px;border-radius:50%;"></div>
-				<h2>LDAP Login</h2>
-				{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+			<main class="login-container" aria-labelledby="login-title">
+				<header class="login-header">
+					{{if .AssetURL.Logo}}<img class="login-logo" src="{{.AssetURL.Logo}}" alt="Logo" width="72" height="72">{{end}}
+					<h1 id="login-title">LDAP Login</h1>
+					<p class="subtitle">Sign in to manage your directory</p>
+				</header>
+				{{if .Error}}<div class="error" role="alert">{{.Error}}</div>{{end}}
 				<form method="POST" action="/login">
 					<div class="form-group">
-						<label>Username</label>
-						<input type="text" name="username" required autofocus>
+						<label for="username">Username</label>
+						<input id="username" type="text" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
 					</div>
 					<div class="form-group">
-						<label>Password</label>
-						<input type="password" name="password" required>
+						<label for="password">Password</label>
+						<div class="password-field">
+							<input id="password" type="password" name="password" autocomplete="current-password" required>
+							<button id="password-toggle" class="password-toggle" type="button" aria-controls="password" aria-label="Show password" hidden>Show</button>
+						</div>
 					</div>
-					<button type="submit">Login</button>
+					<button class="submit-button" type="submit">Login</button>
 				</form>
 
-<div style="text-align:center; margin-top: 15px;">
-    <a href="#" onclick="recoverPassword()" style="color:#3b82f6; font-size:14px; text-decoration:none;">Forgot Password?</a>
+<div class="recovery">
+    <button class="recovery-button" type="button" onclick="recoverPassword()">Forgot Password?</button>
 </div>
 <script>
+const passwordInput = document.getElementById('password');
+const passwordToggle = document.getElementById('password-toggle');
+passwordToggle.hidden = false;
+passwordToggle.addEventListener('click', function () {
+    const show = passwordInput.type === 'password';
+    passwordInput.type = show ? 'text' : 'password';
+    passwordToggle.textContent = show ? 'Hide' : 'Show';
+    passwordToggle.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+});
 function recoverPassword() {
     var u = prompt("Enter your username to request a password reset:");
     if (u) {
@@ -567,16 +602,17 @@ function recoverPassword() {
 </script>
 
 				{{if or .SAMLEnabled .OIDCEnabled}}
-				<hr style="border: 0; border-top: 1px solid #444; margin: 20px 0;">
-				<div style="text-align: center; color: #bbb; margin-bottom: 10px;">Or log in with</div>
+				<p class="sso-heading">Or log in with</p>
+				<div class="sso-options">
 				{{if .SAMLEnabled}}
-				<button type="button" style="background: #8b5cf6; margin-bottom: 10px;" onclick="location.href='/login/saml'">Login with SAML</button>
+				<a class="sso-button" href="/login/saml">Login with SAML</a>
 				{{end}}
 				{{if .OIDCEnabled}}
-				<button type="button" style="background: #10b981;" onclick="location.href='/login/oidc'">Login with OIDC</button>
+				<a class="sso-button" href="/login/oidc">Login with OIDC</a>
 				{{end}}
+				</div>
 				{{end}}
-			</div>
+			</main>
 		</body>
 		</html>
 		`))

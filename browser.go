@@ -1048,7 +1048,7 @@ func ldapSearchEntryFromLDAP(ent *ldap.Entry, requestedAttrs []string) LDAPSearc
 }
 
 const browseHTML = `<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -1059,7 +1059,26 @@ const browseHTML = `<!doctype html>
     :root { --bg: #121212; --text: #e0e0e0; --sidebar-bg: #1e1e1e; --border: #333; --hover: #2a2a2a; --selected-bg: #1e3a8a; --selected-text: #bfdbfe; --table-bg: #1e1e1e; --th-bg: #2a2a2a; }
     body.light { --bg: #f4f6f8; --text: #1f2937; --sidebar-bg: #fff; --border: #ddd; --hover: #e5e7eb; --selected-bg: #bfdbfe; --selected-text: #1e3a8a; --table-bg: #fff; --th-bg: #f9fafb; }
     html, body { height: 100%; margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
-    body { display: flex; height: 100%; }
+    body { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); height: 100vh; height: 100dvh; }
+    [hidden] { display: none !important; }
+    .layout-controls { grid-column: 1 / -1; display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left)); border-bottom:1px solid var(--border); background:var(--sidebar-bg); }
+    .layout-controls strong { margin-right:auto; }
+    .layout-controls .btn { margin:0; background:var(--hover); color:var(--text); border:1px solid var(--border); }
+    .layout-controls .btn[aria-expanded="true"] { background:var(--selected-bg); color:var(--selected-text); }
+    #top-menu { grid-column:1 / -1; display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:10px 12px; border-bottom:1px solid var(--border); background:var(--sidebar-bg); max-height:30dvh; overflow:auto; }
+    #top-menu #quick-create { flex:1; margin:0; padding:0; border:0; }
+    #sidebar { grid-column:1; grid-row:3; }
+    #content { grid-column:2; grid-row:3; }
+    body.sidebar-hidden #content { grid-column:1 / -1; }
+    button, a, summary { touch-action:manipulation; }
+    button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline:2px solid #60a5fa; outline-offset:2px; }
+    .attribute-editor { display:block; width:100%; box-sizing:border-box; min-height:80px; padding:10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; resize:vertical; font:inherit; }
+    .attribute-editor-help { margin:6px 0; font:12px sans-serif; opacity:0.75; }
+    .attribute-remove { margin:6px 0 0; }
+    #tree-panel { display:flex; flex-direction:column; flex:1; min-height:100px; }
+    #tree-panel h3 { font-size:15px; margin:0 0 8px; }
+    #ldap-search { flex-shrink:0; max-height:65%; overflow:auto; }
+    #sidebar.tree-hidden #ldap-search { max-height:none; flex:1; }
     #sidebar {
         width: min(400px, 34vw);
         min-width: 280px;
@@ -1160,21 +1179,42 @@ const browseHTML = `<!doctype html>
       .schema-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
     }
     @media (max-width: 900px) {
-      body { flex-direction: column; overflow: auto; }
-      #sidebar { width: 100%; min-width: 0; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); box-shadow: none; }
-      #content { width: 100%; padding: 14px; }
+      body { grid-template-columns:minmax(0, 1fr); grid-template-rows:auto auto auto minmax(0, 1fr); }
+      #sidebar { grid-column:1; grid-row:3; width:100%; min-width:0; height:auto; max-height:42dvh; border-right:none; border-bottom:1px solid var(--border); box-shadow:none; }
+      #tree-panel { min-height:100px; overflow:auto; }
+      #content, body.sidebar-hidden #content { grid-column:1; grid-row:4; width:100%; padding:14px; }
+      #ldap-search { max-height:26dvh; }
+      #sidebar.tree-hidden #ldap-search { max-height:38dvh; }
+      #sidebar.search-hidden #tree-panel { max-height:38dvh; }
       .modal-content { width: min(680px, calc(100vw - 20px)); }
     }
     @media (max-width: 640px) {
       body { font-size: 14px; }
-      #sidebar { padding: 8px; max-height: 46vh; }
+      #sidebar { padding:8px; }
+      .layout-controls { gap:6px; }
+      .layout-controls strong { width:100%; font-size:14px; }
+      input, select, textarea { font-size:16px !important; min-height:44px; box-sizing:border-box; max-width:100%; }
+      .btn, .qc-btn, .cm-item, summary { min-height:44px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; }
+      .item-text { display:inline-block; min-height:38px; box-sizing:border-box; }
+      .expand-icon { width:32px; line-height:44px; }
+      .tree-scroll-container { overflow-x:auto; }
+      .entry-toolbar { position:sticky; top:0; z-index:5; padding:8px 0; background:var(--bg); }
+      .entry-dn-box { font-size:12px; padding:8px; }
+      #entry-attrs, #entry-attrs tbody, #entry-attrs tr, #entry-attrs th, #entry-attrs td { display:block; width:100%; box-sizing:border-box; }
+      #entry-attrs thead { display:none; }
+      #entry-attrs tr { margin-bottom:12px; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+      #entry-attrs th, #entry-attrs td { border:0; }
+      #entry-attrs th, #entry-attrs .attribute-name { overflow-wrap:anywhere; background:var(--th-bg); font-family:sans-serif; font-weight:600; }
+      #entry-attrs { display:block !important; }
+      .inline-editor-row > input, .inline-editor-row > select { flex:0 0 auto; width:100%; }
+      .image-preview { max-width:100%; }
       #content { padding: 10px; }
       .header { margin-bottom: 14px; }
       .header-actions { width: 100%; justify-content: stretch; }
       .header-actions .btn, .entry-toolbar-actions .btn, .modal-actions .btn { flex: 1 1 140px; }
       .btn { padding: 8px 10px; }
       th, td { padding: 8px; font-size: 13px; }
-      table { min-width: 520px; }
+      table { min-width:0; }
       #qc-modal, #group-select-modal, #settings-modal, #credential-modal, #schema-modal { align-items: flex-start; padding: max(8px, env(safe-area-inset-top)) 6px max(8px, env(safe-area-inset-bottom)); }
       .modal-content { width: calc(100vw - 12px) !important; max-height: min(94vh, calc(100dvh - 16px)); padding: 14px; border-radius: 10px; }
       .modal-scroll-body { padding-right: 2px; }
@@ -1191,46 +1231,51 @@ const browseHTML = `<!doctype html>
   </style>
 </head>
 <body>
-  <div id="sidebar">
-    <div class="header">
-      <h3>LDAP Tree</h3>
+  <nav class="layout-controls" aria-label="Layout controls">
+    <strong>LDAP Browser</strong>
+    <button class="btn" id="toggle-tree" aria-controls="tree-panel" aria-expanded="true" onclick="togglePanel('tree')">Tree</button>
+    <button class="btn" id="toggle-search" aria-controls="ldap-search" aria-expanded="true" onclick="togglePanel('search')">Search</button>
+    <button class="btn" id="toggle-menu" aria-controls="top-menu" aria-expanded="true" onclick="togglePanel('menu')">Menu</button>
+  </nav>
+  <div id="top-menu" aria-label="Application menu">
       <div class="header-actions">
-        <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Schema Manager</button>
+        <button class="btn" onclick="showSchemaManager()" style="background:#3b82f6;">Schema Manager</button>
         <button class="btn" style="background: #4b5563;" onclick="openSettings()">Settings</button>
         <a href="/logout" class="btn">Logout</a>
       </div>
-    </div>
     <div id="quick-create">
       <strong>Quick Create:</strong><br/>
     </div>
-    <div id="ldap-search">
+  </div>
+  <aside id="sidebar" aria-label="Directory navigation">
+    <section id="ldap-search" aria-label="LDAP Search">
       <strong>LDAP Search</strong>
-      <input type="text" id="ldap-search-q" placeholder="Text search across LDAP..." onkeydown="if (event.key === 'Enter') runLDAPSearch()" />
+      <input type="text" id="ldap-search-q" aria-label="Search directory text" autocapitalize="none" spellcheck="false" placeholder="Text search across LDAP..." onkeydown="if (event.key === 'Enter') runLDAPSearch()" />
       <button class="btn" style="background:#3b82f6; margin:8px 0 0 0; width:100%;" onclick="runLDAPSearch()">Search</button>
       <details>
         <summary>Parameterized search</summary>
-        <input type="text" id="ldap-search-filter" placeholder="LDAP filter, e.g. (objectClass=*)" />
-        <input type="text" id="ldap-search-base" placeholder="Base DN override, optional" />
-        <input type="text" id="ldap-search-attrs" value="cn,uid,mail,objectClass" placeholder="Returned attrs, comma-separated" />
-        <select id="ldap-search-scope">
+        <input type="text" id="ldap-search-filter" aria-label="LDAP filter" autocapitalize="none" spellcheck="false" placeholder="LDAP filter, e.g. (objectClass=*)" />
+        <input type="text" id="ldap-search-base" aria-label="Base DN" autocapitalize="none" spellcheck="false" placeholder="Base DN override, optional" />
+        <input type="text" id="ldap-search-attrs" aria-label="Returned attributes" autocapitalize="none" spellcheck="false" value="cn,uid,mail,objectClass" placeholder="Returned attrs, comma-separated" />
+        <select id="ldap-search-scope" aria-label="Search scope">
           <option value="subtree">Subtree</option>
           <option value="one">One level</option>
           <option value="base">Base object</option>
         </select>
-        <input type="number" id="ldap-search-limit" value="100" min="0" placeholder="Limit, 0 for full" />
+        <input type="number" id="ldap-search-limit" aria-label="Result limit, zero for all" value="100" min="0" placeholder="Limit, 0 for full" />
       </details>
-      <div id="ldap-search-results"></div>
-    </div>
+      <div id="ldap-search-results" aria-live="polite"></div>
+    </section>
+    <section id="tree-panel" aria-label="LDAP Tree">
+      <h3>LDAP Tree</h3>
     <div class="tree-scroll-container">
       <ul class="tree-ul" id="tree-root"></ul>
     </div>
-  </div>
+    </section>
+  </aside>
   <div id="content">
     <div class="header">
       <h2>Entry Details</h2>
-      <div class="header-actions">
-        <button onclick="showSchemaManager()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Schema Manager</button>
-      </div>
     </div>
     <div class="entry-scroll-container">
       <div class="entry-toolbar">
@@ -1323,6 +1368,27 @@ const browseHTML = `<!doctype html>
   <script>
     const settings = {{.SettingsJSON}};
     const serverTimeZone = {{printf "%q" .ServerTimeZone}};
+
+    const phoneLayout = window.matchMedia('(max-width: 900px)');
+    const panelState = { tree:true, search:!phoneLayout.matches, menu:!phoneLayout.matches };
+    function updatePanels() {
+        const ids = { tree:'tree-panel', search:'ldap-search', menu:'top-menu' };
+        Object.entries(ids).forEach(([name, id]) => {
+            document.getElementById(id).hidden = !panelState[name];
+            document.getElementById('toggle-' + name).setAttribute('aria-expanded', String(panelState[name]));
+        });
+        const sidebar = document.getElementById('sidebar');
+        sidebar.hidden = !panelState.tree && !panelState.search;
+        sidebar.classList.toggle('tree-hidden', !panelState.tree);
+        sidebar.classList.toggle('search-hidden', !panelState.search);
+        document.body.classList.toggle('sidebar-hidden', sidebar.hidden);
+    }
+    function togglePanel(name) {
+        panelState[name] = !panelState[name];
+        updatePanels();
+        if (name === 'search' && panelState.search) document.getElementById('ldap-search-q').focus();
+    }
+    updatePanels();
 
     if (settings && settings.ui && settings.ui.theme === "light") {
         document.body.classList.add("light");
@@ -2258,6 +2324,7 @@ const browseHTML = `<!doctype html>
             const tr = document.createElement('tr');
             const tdAttr = document.createElement('td');
             tdAttr.textContent = attr;
+            tdAttr.className = 'attribute-name';
             const tdVals = document.createElement('td');
             tdVals.className = 'val-cell';
             tdVals.dataset.attr = attr;
@@ -2451,12 +2518,17 @@ const browseHTML = `<!doctype html>
         document.getElementById('btn-save').style.display = isEditing ? 'inline-block' : 'none';
         document.getElementById('btn-add-attr').style.display = isEditing ? 'inline-block' : 'none';
         document.getElementById('btn-add-oc').style.display = isEditing ? 'inline-block' : 'none';
-        if (!isEditing) { document.getElementById('add-attr-panel').style.display = 'none'; document.getElementById('add-oc-panel').style.display = 'none'; }
+        if (!isEditing) {
+            document.getElementById('add-attr-panel').style.display = 'none';
+            document.getElementById('add-oc-panel').style.display = 'none';
+            pendingDeletes = [];
+        }
 
         const readOnly = ['userpassword', 'modifiersname', 'modifytimestamp', 'subschemasubentry', 'memberof', 'creatorsname', 'createtimestamp', 'contextcsn', 'entrydn', 'entrycsn', 'entryuuid', 'hasalsubordinates', 'numsubordinates'];
         const cells = document.querySelectorAll('.val-cell');
         cells.forEach(cell => {
             const attr = cell.dataset.attr;
+            cell.parentElement.style.display = '';
             if (isEditing) {
                 if (readOnly.includes(attr.toLowerCase())) {
                     cell.style.opacity = '0.5';
@@ -2466,8 +2538,23 @@ const browseHTML = `<!doctype html>
                     cell.style.opacity = '0.5';
                     return;
                 }
-                const val = currentEntryData[attr].join('\n'); const rows = Math.max(1, currentEntryData[attr].length);
-                cell.innerHTML = '<textarea style="width:80%; box-sizing:border-box; padding:4px; vertical-align:top;" rows="' + rows + '">' + val.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</textarea><button onclick="deleteAttr(\'' + attr + '\')" style="margin-left:5px; background:#dc2626; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">X</button>';
+                cell.replaceChildren();
+                const input = document.createElement('textarea');
+                input.className = 'attribute-editor';
+                input.rows = Math.max(2, Math.min(10, currentEntryData[attr].length));
+                input.value = currentEntryData[attr].join('\n');
+                input.setAttribute('aria-label', 'Values for ' + attr);
+                input.autocapitalize = 'off';
+                input.spellcheck = false;
+                const help = document.createElement('div');
+                help.className = 'attribute-editor-help';
+                help.textContent = 'One value per line';
+                const remove = document.createElement('button');
+                remove.className = 'btn attribute-remove';
+                remove.textContent = 'Remove attribute';
+                remove.setAttribute('aria-label', 'Remove ' + attr);
+                remove.onclick = () => deleteAttr(attr);
+                cell.append(input, help, remove);
             } else {
                 cell.style.opacity = '1';
                 cell.innerHTML = '';
@@ -2480,7 +2567,10 @@ const browseHTML = `<!doctype html>
     window.deleteAttr = function(attr) {
         pendingDeletes.push(attr);
         const cell = document.querySelector('.val-cell[data-attr="'+attr+'"]');
-        if (cell) cell.parentElement.style.display = 'none';
+        if (cell) {
+            cell.parentElement.style.display = 'none';
+            document.getElementById('btn-save').focus();
+        }
     };
 
     async function saveEdits() {
@@ -2509,9 +2599,8 @@ const browseHTML = `<!doctype html>
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ dn: currentEntryDN, replace: replace, delete: pendingDeletes })
         });
-        pendingDeletes = [];
-
         if (res.ok) {
+            pendingDeletes = [];
             alert('Saved successfully!');
             document.getElementById('tree-root').innerHTML = '';
             loadRoots();
