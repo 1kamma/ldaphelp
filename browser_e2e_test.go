@@ -112,6 +112,32 @@ func TestHandleBrowseRendersMobileLayoutAndEditors(t *testing.T) {
 	}
 }
 
+func TestHandleBrowseRendersServerAndBackupManagement(t *testing.T) {
+	body := renderBrowseBody(t)
+	checks := []string{
+		`Servers &amp; Backups`,
+		`id="management-modal" hidden role="dialog"`,
+		`/api/managed_resources`,
+		`/api/attached_schema`,
+		`/api/backups`,
+		`id="managed-password" type="password"`,
+		`id="backup-destination"`,
+		`Mounted CIFS/SMB directory`,
+		`Mounted NFS directory`,
+		`WebDAV over HTTPS`,
+		`schemaViewState.mode === 'attached'`,
+		`return loadAttachedSchema(schemaViewState.attachedID, attr)`,
+		`payload.operation = document.getElementById('schema-operation').value`,
+		`payload.id = schemaViewState.attachedID`,
+		`Sensitive, unencrypted archive`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Errorf("expected server/backup management HTML to contain %q", check)
+		}
+	}
+}
+
 func TestHandleBrowseDoesNotDuplicateOcKeyDeclaration(t *testing.T) {
 	body := renderBrowseBody(t)
 	if count := strings.Count(body, "const ocKey = Object.keys(data).find(k => k.toLowerCase() === 'objectclass');"); count != 1 {

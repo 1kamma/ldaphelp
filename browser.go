@@ -96,6 +96,7 @@ func getLDAPConn(w http.ResponseWriter, r *http.Request, cfg Config) (*ldap.Conn
 	if err != nil {
 		return nil, err
 	}
+	conn.SetTimeout(30 * time.Second)
 
 	if pwd, ok := session.Values["password"].(string); ok && pwd != "" {
 		if err := conn.Bind(dn, pwd); err != nil {
@@ -1241,6 +1242,7 @@ const browseHTML = `<!doctype html>
       <div class="header-actions">
         <button class="btn" onclick="showSchemaManager()" style="background:#3b82f6;">Schema Manager</button>
         <button class="btn" style="background: #4b5563;" onclick="openSettings()">Settings</button>
+        <button class="btn" style="background:#2563eb;" onclick="openManagement()">Servers &amp; Backups</button>
         <a href="/logout" class="btn">Logout</a>
       </div>
     <div id="quick-create">
@@ -3090,8 +3092,8 @@ const browseHTML = `<!doctype html>
             </div>
         </div>
         <div class="header-actions" style="margin-bottom:20px; justify-content:flex-start;">
-            <button onclick="showLocalSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
-            <button onclick="showLocalSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
+            <button onclick="showSchemaTab('olcObjectClasses')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Object Classes</button>
+            <button onclick="showSchemaTab('olcAttributeTypes')" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Attribute Types</button>
             <button onclick="showReplicaTargets()" style="background:#2563eb;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Replication Peers</button>
         </div>
         <div id="schema-admin-login" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
@@ -3102,12 +3104,17 @@ const browseHTML = `<!doctype html>
             <button onclick="unlockSchemaEdit()" style="background:#f59e0b;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Unlock Editing</button>
         </div>
         <div id="schema-add-form" style="display:none;margin-bottom:20px;background:#2a2a2a;padding:15px;border-radius:4px;">
-            <h3>Add New Schema Item</h3>
+            <h3>Schema Definition Editor</h3>
             <div id="schema-target-note" style="font-size:12px;color:#93c5fd;margin-bottom:10px;display:none;"></div>
             <input type="text" id="schema-dn" placeholder="DN (e.g., cn={1}core,cn=schema,cn=config)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
             <input type="text" id="schema-attr" placeholder="Attribute (e.g., olcObjectClasses)" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;" />
             <textarea id="schema-value" placeholder="Raw Definition Value" style="width:100%;margin-bottom:10px;padding:8px;background:#1e1e1e;color:white;border:1px solid #444;min-height:100px;"></textarea>
-            <button onclick="addSchemaItem()" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Add Item</button>
+            <button onclick="addSchemaItem()" style="background:#10b981;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Apply Schema Change</button>
+        </div>
+        <div id="attached-schema-operation" hidden style="margin-bottom:12px;">
+          <label for="schema-operation">Schema operation</label>
+          <select id="schema-operation"><option value="add">Add definition</option><option value="delete">Delete this definition</option><option value="replace">Replace all definitions of this attribute</option></select>
+          <p class="form-help">LDAP ACLs apply. Replacing removes every other definition of this attribute on the target entry. Back up before making changes.</p>
         </div>
         <div id="schema-content" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(min(100%, 320px), 1fr));gap:20px;"></div>
         </div>
@@ -3130,6 +3137,7 @@ const schemaViewState = {
     mode: 'local',
     currentAttr: 'olcObjectClasses',
     replicaURL: '',
+    attachedID: 0,
     bindDN: '',
     bindPwd: '',
 };
@@ -3150,7 +3158,11 @@ function prepareSchemaTab(attr) {
 
 function updateSchemaTargetNote() {
     const note = document.getElementById('schema-target-note');
-    if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+    document.getElementById('attached-schema-operation').hidden = schemaViewState.mode !== 'attached';
+    if (schemaViewState.mode === 'attached') {
+        note.textContent = 'Attached server: ' + schemaViewState.replicaURL;
+        note.style.display = 'block';
+    } else if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
         note.textContent = 'Target replica: ' + schemaViewState.replicaURL;
         note.style.display = 'block';
     } else {
@@ -3162,7 +3174,7 @@ function updateSchemaTargetNote() {
 function applySchemaEditState() {
     const root = document.getElementById('schema-fragment-root');
     const canEdit = !!(root && root.dataset.canEdit === 'true');
-    if (canEdit || (tempAdminDN && tempAdminPwd)) {
+    if (schemaViewState.mode === 'attached' || canEdit || (tempAdminDN && tempAdminPwd)) {
         document.getElementById('schema-add-form').style.display = 'block';
         document.getElementById('schema-admin-login').style.display = 'none';
     } else {
@@ -3175,7 +3187,23 @@ function applySchemaEditState() {
     updateSchemaTargetNote();
 }
 
+function clearSchemaEditor() {
+    document.getElementById('schema-dn').value = '';
+    document.getElementById('schema-value').value = '';
+}
+
+function showSchemaTab(attr) {
+    if (schemaViewState.mode === 'attached') {
+        return loadAttachedSchema(schemaViewState.attachedID, attr);
+    }
+    if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+        return loadReplicaSchema(schemaViewState.replicaURL, schemaViewState.bindDN, schemaViewState.bindPwd, attr);
+    }
+    showLocalSchemaTab(attr);
+}
+
 function showLocalSchemaTab(attr) {
+    clearSchemaEditor();
     schemaViewState.mode = 'local';
     schemaViewState.replicaURL = '';
     schemaViewState.bindDN = '';
@@ -3226,6 +3254,7 @@ function renderSchemaManagerData(schemaDef, attr) {
 }
 
 async function loadReplicaSchema(url, bindDn, bindPwd, attr) {
+    clearSchemaEditor();
     prepareSchemaTab(attr);
     schemaViewState.mode = 'replica';
     schemaViewState.replicaURL = url;
@@ -3293,6 +3322,12 @@ async function showReplicaTargets() {
     renderReplicaTargets(data);
 }
 
+document.body.addEventListener('htmx:beforeSwap', function (evt) {
+    if (evt.detail.target && evt.detail.target.id === 'schema-content' && schemaViewState.mode !== 'local') {
+        evt.detail.shouldSwap = false;
+    }
+});
+
 document.body.addEventListener('htmx:afterSwap', function (evt) {
     if (evt.target && evt.target.id === 'schema-content') {
         applySchemaEditState();
@@ -3316,7 +3351,14 @@ async function addSchemaItem() {
             payload.adminPwd = tempAdminPwd;
         }
         let endpoint = '/api/schema_modify';
-        if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+        if (schemaViewState.mode === 'attached') {
+            endpoint = '/api/attached_schema';
+            delete payload.adminDn;
+            delete payload.adminPwd;
+            payload.id = schemaViewState.attachedID;
+            payload.operation = document.getElementById('schema-operation').value;
+            if (!confirm('Apply ' + payload.operation + ' on ' + schemaViewState.replicaURL + '? Make sure you have a backup.')) return;
+        } else if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
             endpoint = '/api/schema_replica_modify';
             payload.url = schemaViewState.replicaURL;
             payload.bindDn = schemaViewState.bindDN || '';
@@ -3329,9 +3371,11 @@ async function addSchemaItem() {
             body: JSON.stringify(payload)
         });
         if (res.ok) {
-            alert('Added successfully!');
+            alert('Schema updated successfully!');
             document.getElementById('schema-value').value = '';
-            if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
+            if (schemaViewState.mode === 'attached') {
+                loadAttachedSchema(schemaViewState.attachedID, attr);
+            } else if (schemaViewState.mode === 'replica' && schemaViewState.replicaURL) {
                 loadReplicaSchema(schemaViewState.replicaURL, schemaViewState.bindDN, schemaViewState.bindPwd, attr);
             } else {
                 showLocalSchemaTab(attr);
@@ -3377,5 +3421,6 @@ async function submitAddCredential() {
     }
 }
 </script>
+` + managedUIHTML + `
 </body>
 </html>`
