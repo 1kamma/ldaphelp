@@ -7,6 +7,8 @@ package main
 // A missing cn=schema,cn=config is allowed for non-OpenLDAP servers; all other
 // schema/search failures abort publication. Mounted CIFS/NFS paths must already
 // exist; this backend never mounts shares or creates WebDAV collections.
+// Version 2 manifests identify schema-only servers with schema_only: true;
+// those servers contain schema.ldif only, with no entries.ldif or data searches.
 // Mounted staging files must report private permissions before data is copied.
 // Server-side share ACLs remain the operator's responsibility: POSIX mode checks
 // cannot establish which remote identities can access a CIFS/NFS backup.
@@ -43,6 +45,7 @@ type backupServerManifest struct {
 	ID             int64    `json:"id"`
 	Name           string   `json:"name"`
 	Directory      string   `json:"directory"`
+	SchemaOnly     bool     `json:"schema_only"`
 	NamingContexts []string `json:"naming_contexts"`
 	Subschema      []string `json:"subschema"`
 }
@@ -96,7 +99,7 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.RemoveAll(dir)
-	manifest := backupManifest{Version: 1, Created: time.Now().UTC(), Warning: backupWarning}
+	manifest := backupManifest{Version: 2, Created: time.Now().UTC(), Warning: backupWarning}
 	// Do not include URIs, bind identities, passwords, or destination credentials
 	// in either the manifest or errors returned to the browser.
 	primary, err := getLDAPConn(w, r, a.cfg)
@@ -123,12 +126,16 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "saved LDAP credentials unavailable", http.StatusInternalServerError)
 			return
 		}
-		conn, err := connectManagedLDAP(item)
+		conn, err := connectManagedLDAPForRequest(r, item)
 		if err != nil {
+			if errors.Is(err, errManagedSessionCredentials) {
+				http.Error(w, errManagedSessionCredentials.Error()+"; no backup published", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "saved LDAP connection failed; no backup published", http.StatusBadGateway)
 			return
 		}
-		info, err := backupExportConnection(ctx, conn, dir, item.ID, item.Name, len(manifest.Servers))
+		info, err := backupExportConnectionWithScope(ctx, conn, dir, item.ID, item.Name, len(manifest.Servers), item.SchemaOnly)
 		if err != nil {
 			http.Error(w, "saved LDAP export failed; no backup published", http.StatusBadGateway)
 			return
@@ -154,6 +161,10 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func backupExportConnection(ctx context.Context, conn *ldap.Conn, dir string, id int64, name string, index int) (backupServerManifest, error) {
+	return backupExportConnectionWithScope(ctx, conn, dir, id, name, index, false)
+}
+
+func backupExportConnectionWithScope(ctx context.Context, conn *ldap.Conn, dir string, id int64, name string, index int, schemaOnly bool) (backupServerManifest, error) {
 	defer conn.Close()
 	conn.SetTimeout(backupLDAPTimeout)
 	// Shared helpers own dialing/binding; the primary getLDAPConn helper must
@@ -161,27 +172,37 @@ func backupExportConnection(ctx context.Context, conn *ldap.Conn, dir string, id
 	// Closing the dedicated connection interrupts an in-flight Search on cancel.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	info := backupServerManifest{ID: id, Name: name, Directory: fmt.Sprintf("servers/%03d", index)}
+	return backupExportServer(ctx, conn, dir, id, name, index, schemaOnly)
+}
+
+func backupExportServer(ctx context.Context, conn ldapSearcher, dir string, id int64, name string, index int, schemaOnly bool) (backupServerManifest, error) {
+	info := backupServerManifest{ID: id, Name: name, Directory: fmt.Sprintf("servers/%03d", index), SchemaOnly: schemaOnly}
 	serverDir := filepath.Join(dir, filepath.FromSlash(info.Directory))
 	if err := os.MkdirAll(serverDir, 0700); err != nil {
 		return info, err
 	}
-	entries, err := os.OpenFile(filepath.Join(serverDir, "entries.ldif"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return info, err
+	var entries *os.File
+	if !schemaOnly {
+		var err error
+		entries, err = os.OpenFile(filepath.Join(serverDir, "entries.ldif"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return info, err
+		}
+		defer entries.Close()
 	}
-	defer entries.Close()
 	schema, err := os.OpenFile(filepath.Join(serverDir, "schema.ldif"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return info, err
 	}
 	defer schema.Close()
-	info, err = backupExportLDAP(ctx, conn, entries, schema, info)
+	info, err = backupExportLDAPWithScope(ctx, conn, entries, schema, info, schemaOnly)
 	if err != nil {
 		return info, err
 	}
-	if err := entries.Close(); err != nil {
-		return info, err
+	if entries != nil {
+		if err := entries.Close(); err != nil {
+			return info, err
+		}
 	}
 	return info, schema.Close()
 }
@@ -258,6 +279,11 @@ func (p backupCriticalPaging) Encode() *ber.Packet {
 }
 
 func backupExportLDAP(ctx context.Context, conn ldapSearcher, entries, schema io.Writer, info backupServerManifest) (backupServerManifest, error) {
+	return backupExportLDAPWithScope(ctx, conn, entries, schema, info, false)
+}
+
+func backupExportLDAPWithScope(ctx context.Context, conn ldapSearcher, entries, schema io.Writer, info backupServerManifest, schemaOnly bool) (backupServerManifest, error) {
+	info.SchemaOnly = schemaOnly
 	var contexts, subschema []string
 	subschemaSeen := make(map[string]bool)
 	addSubschema := func(values []string) {
@@ -276,17 +302,22 @@ func backupExportLDAP(ctx context.Context, conn ldapSearcher, entries, schema io
 	if err != nil {
 		return info, err
 	}
-	bases, err := backupDistinctContexts(contexts)
-	if err != nil {
-		return info, err
+	var bases []string
+	if !schemaOnly {
+		bases, err = backupDistinctContexts(contexts)
+		if err != nil {
+			return info, err
+		}
+		if len(bases) == 0 {
+			return info, errors.New("RootDSE advertises no naming contexts")
+		}
+		if _, err := io.WriteString(entries, "version: 1\n\n"); err != nil {
+			return info, err
+		}
 	}
-	if len(bases) == 0 {
-		return info, errors.New("RootDSE advertises no naming contexts")
-	}
+	// In schema-only mode no naming contexts are exported or traversed, even
+	// when advertised. Subschema discovery is limited to RootDSE.
 	info.NamingContexts = bases
-	if _, err := io.WriteString(entries, "version: 1\n\n"); err != nil {
-		return info, err
-	}
 	if _, err := io.WriteString(schema, "version: 1\n\n"); err != nil {
 		return info, err
 	}
@@ -500,7 +531,11 @@ func backupMakeArchive(ctx context.Context, dir string, manifest backupManifest)
 		return "", err
 	}
 	for _, server := range manifest.Servers {
-		for _, leaf := range []string{"schema.ldif", "entries.ldif"} {
+		leaves := []string{"schema.ldif"}
+		if !server.SchemaOnly {
+			leaves = append(leaves, "entries.ldif")
+		}
+		for _, leaf := range leaves {
 			member := server.Directory + "/" + leaf
 			f, err := os.Open(filepath.Join(dir, filepath.FromSlash(member)))
 			if err != nil {

@@ -41,8 +41,18 @@ Sign in and open **Servers & Backups** in the `/browse` header. This dialog mana
 ### Attach an LDAP server
 
 1. Select **New connection or destination** and choose **LDAP server**.
-2. Enter a descriptive **Name**, a **Server URI** such as `ldaps://ldap.example.com:636`, the full **Bind user DN** such as `cn=backup-reader,ou=services,dc=example,dc=com`, and its **Password**.
-3. Select **Save**. Use **Edit connection** to update the saved details later. Leave the password empty when editing to preserve it; saved passwords are never returned to the browser.
+2. Enter a descriptive **Name** and a **Server URI** such as `ldaps://ldap.example.com:636`.
+3. Choose **LDAP attachment scope**:
+   - **Schemas only** (the default for new attachments): inspect and edit that server's schema and include only its schemas in backups. No user/directory-data searches are issued against this attachment. This is useful when servers replicate data but have different schemas, or your account can access schema but not directory data.
+   - **Schemas and directory data**: also export all readable naming-context entries from this attachment during backups.
+4. Choose **LDAP authentication**:
+   - **Saved bind DN and password**: enter a full **Bind user DN**, such as `cn=schema-editor,ou=services,dc=example,dc=com`, and its **Password**. The saved account's LDAP ACLs control access.
+   - **Use my current LDAP login**: reuse the signed-in user's LDAP DN and password when connecting to this attachment. No separate bind DN/password needs to be saved. The remote server must accept that login and grant it the necessary schema permissions.
+5. Select **Save**. Use **Edit connection** to update the saved details later. In saved-credential mode, leave the password empty when editing to preserve it; saved passwords are never returned to the browser.
+
+**Current-login mode is explicit credential forwarding to a trusted LDAP server.** It sends your current LDAP login credentials to the attachment when reading/editing schemas or running backups; use it only for servers you trust, preferably over LDAPS. It does not create another stored password or grant additional permissions. SSO sessions without a reusable LDAP password cannot use this mode: sign in with an LDAP password or use saved bind credentials instead. There is no automatic fallback to a service account or an attachment's old saved password. Switching to current-login mode removes that attachment's previously saved encrypted password; switching back requires entering a password again.
+
+Existing attachments retain their original **Schemas and directory data** scope and saved-credential mode after the database migration. Use **Edit connection** to mark replicated-data servers as **Schemas only**. Scope and authentication are independent settings: a schema-only attachment can use either a saved schema account or the current login.
 
 LDAP URIs accept `ldap://` or `ldaps://` with an optional port, but no embedded credentials, search/base-DN path, query, or fragment. Prefer LDAPS: plain `ldap://` does not encrypt bind credentials in transit, and attached connections do not automatically upgrade with StartTLS. Saving a connection is not a connectivity or permissions test; schema access and backup operations open and bind the connection when used.
 
@@ -61,7 +71,7 @@ Keep the existing `encryption_key` safe and recoverable, with access restricted 
 3. Check the attached-server target, target DN, attribute, and raw definition. Targets must be `cn=schema,cn=config` or a descendant; the supported attributes are `olcObjectClasses` and `olcAttributeTypes`.
 4. Choose the **Schema operation**, submit the editor form, and confirm the change.
 
-The saved bind DN needs LDAP read access to inspect schema and appropriate write access to modify it. Application login or ownership of the saved connection does not bypass OpenLDAP ACLs. This editor modifies an existing schema entry; it is not a general-purpose schema-entry creation tool.
+The selected bind identity—either the saved bind DN or the current LDAP login—needs LDAP read access to inspect schema and appropriate write access to modify it. A schema-only attachment does not require read access to user/directory data. Application login or ownership of the saved connection does not bypass OpenLDAP ACLs. This editor modifies an existing schema entry; it is not a general-purpose schema-entry creation tool.
 
 - **Add definition** adds the supplied definition value.
 - **Delete this definition** removes the supplied definition value.
@@ -82,15 +92,17 @@ servers/001/entries.ldif
 ...
 ```
 
-`servers/000` is the configured primary LDAP server. Subsequent directories are **every LDAP attachment saved by the current user**, not attachments belonging to other logins. The manifest maps directories to saved server names/IDs and records the format version, UTC creation time, naming contexts, advertised subschema DNs, and an export warning.
+`servers/000` is the configured primary LDAP server. Subsequent directories are **every LDAP attachment saved by the current user**, not attachments belonging to other logins. **Schema-only attachments contain `schema.ldif` but no `entries.ldif`.** The version-2 manifest maps directories to saved server names/IDs and records each server's `schema_only` flag, UTC creation time, exported naming contexts, advertised subschema DNs, and an export warning. The primary server always has `schema_only: false`.
 
-For each server, the export includes:
+For the primary server and attachments with **Schemas and directory data** scope, the export includes:
 
 - All readable entries beneath the naming contexts advertised by Root DSE, including **all readable users** and other objects. This is a superset of a users-only export, not a backup restricted to the currently displayed search or selected user.
 - Readable OpenLDAP schema under `cn=schema,cn=config`, when present, and advertised subschema entries discovered from Root DSE and exported entries.
 - Readable attributes, subject to the server's ACLs and search behavior. An ACL may silently hide data even when the operation succeeds.
 
-The primary server uses the current session's normal LDAP connection: the signed-in user's bind for password login, or the configured service bind for SSO (see [SSO and LDAP permissions](#sso-and-ldap-permissions)). Each attachment uses its own saved bind credentials. Ensure these identities can read the intended naming contexts and schema. Any connection/export error stops publication of the combined archive; success does not prove ACL-hidden data was included.
+For **Schemas only** attachments, the export includes readable OpenLDAP schema under `cn=schema,cn=config` and subschemas advertised by Root DSE. It skips naming-context data searches entirely and does not discover additional subschemas from user/data entries. These attachments do not need to advertise naming contexts or grant access to user entries.
+
+The primary server uses the current session's normal LDAP connection: the signed-in user's bind for password login, or the configured service bind for SSO (see [SSO and LDAP permissions](#sso-and-ldap-permissions)). Each attachment uses its selected authentication mode: saved bind credentials or the current user's reusable LDAP credentials. Attached current-login mode never uses the primary server's SSO service-account fallback. Ensure these identities can read the intended schema and, for full-data attachments, naming contexts. Any connection/export error stops publication of the combined archive; success does not prove ACL-hidden data was included.
 
 The manifest does not include connection URIs, bind identities, saved passwords, or destination credentials. **This is an LDAP data export, not an application database/configuration export.** Credentials present in LDAP itself, such as readable password hashes or secret attributes, can still appear in the LDIF.
 

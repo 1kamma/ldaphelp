@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,6 +30,67 @@ func managedTestDB(t *testing.T) {
 
 func managedTestLDAP() ManagedResource {
 	return ManagedResource{Name: "Attached LDAP", Kind: "ldap", URI: "ldaps://ldap.example.test", Username: "cn=admin,dc=example,dc=test"}
+}
+
+func TestManagedResourcesLegacyMigration(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(strconv.FormatBool(partial), func(t *testing.T) {
+			managedTestDB(t)
+			_, err := db.Exec(`CREATE TABLE managed_resources (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
+ name TEXT NOT NULL, kind TEXT NOT NULL, uri TEXT NOT NULL,
+ username TEXT NOT NULL, path TEXT NOT NULL,
+ encrypted_password TEXT NOT NULL DEFAULT '')`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if partial {
+				if _, err := db.Exec(`ALTER TABLE managed_resources ADD COLUMN schema_only INTEGER NOT NULL DEFAULT 0`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			key := generateEncryptionKey()
+			clear, _ := json.Marshal(managedSecret{Owner: "alice", ID: 1, Password: "legacy-secret"})
+			ciphertext, err := encrypt(string(clear), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO managed_resources(id,owner,name,kind,uri,username,path,encrypted_password) VALUES(1,'alice','Legacy','ldap','ldaps://example.test','cn=admin','',?)`, ciphertext); err != nil {
+				t.Fatal(err)
+			}
+			var wg sync.WaitGroup
+			errs := make(chan error, 24)
+			for i := 0; i < cap(errs); i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					errs <- ensureManagedResources()
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := getManagedResource("alice", 1, key)
+			if err != nil || got.Password != "legacy-secret" || !got.HasPassword || got.SchemaOnly || got.UseSessionCredentials {
+				t.Fatalf("legacy behavior changed: %#v %v", got, err)
+			}
+			listed, err := listManagedResources("alice")
+			if err != nil || len(listed) != 1 || listed[0].SchemaOnly || listed[0].UseSessionCredentials {
+				t.Fatalf("legacy list: %#v %v", listed, err)
+			}
+			for _, column := range []string{"schema_only", "use_session_credentials"} {
+				var notNull int
+				var defaultValue string
+				if err := db.QueryRow(`SELECT "notnull",dflt_value FROM pragma_table_info('managed_resources') WHERE name=?`, column).Scan(&notNull, &defaultValue); err != nil || notNull != 1 || defaultValue != "0" {
+					t.Fatalf("column %s: notnull=%d default=%q err=%v", column, notNull, defaultValue, err)
+				}
+			}
+		})
+	}
 }
 
 func TestManagedResourcesBackupDestinations(t *testing.T) {
@@ -393,6 +455,187 @@ func TestManagedResourcesAPISecurityAndRoundTrip(t *testing.T) {
 	app.handleManagedResources(rr, managedTestRequest(t, "DELETE", "/api/managed_resources", `{"id":`+strconv.FormatInt(result.ID, 10)+`}`, managedTestSession()))
 	if rr.Code != 200 {
 		t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestManagedResourceFlagsAndCredentialSwitches(t *testing.T) {
+	managedTestDB(t)
+	key, password := generateEncryptionKey(), "saved-secret"
+	for _, schemaOnly := range []bool{false, true} {
+		for _, sessionMode := range []bool{false, true} {
+			item := managedTestLDAP()
+			item.SchemaOnly, item.UseSessionCredentials = schemaOnly, sessionMode
+			var secret *string
+			if sessionMode {
+				item.Username = ""
+			} else {
+				secret = &password
+			}
+			id, err := saveManagedResource("alice", item, secret, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := getManagedResource("alice", id, key)
+			if err != nil || got.SchemaOnly != schemaOnly || got.UseSessionCredentials != sessionMode || got.HasPassword == sessionMode {
+				t.Fatalf("flag round trip: %#v %v", got, err)
+			}
+			listed, err := listManagedResources("alice")
+			if err != nil || listed[len(listed)-1].SchemaOnly != schemaOnly || listed[len(listed)-1].UseSessionCredentials != sessionMode {
+				t.Fatalf("flag list: %#v %v", listed, err)
+			}
+		}
+	}
+	item := managedTestLDAP()
+	id, err := saveManagedResource("alice", item, &password, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.ID, item.UseSessionCredentials, item.Username = id, true, ""
+	if _, err := saveManagedResource("bob", item, nil, key); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cross-owner switch: %v", err)
+	}
+	if _, err := saveManagedResource("alice", item, &password, key); !errors.Is(err, errManagedInvalid) {
+		t.Fatalf("session mode accepted password: %v", err)
+	}
+	for _, secret := range []*string{nil, new(string)} {
+		if _, err := saveManagedResource("alice", item, secret, key); err != nil {
+			t.Fatal(err)
+		}
+		var encrypted string
+		if err := db.QueryRow(`SELECT encrypted_password FROM managed_resources WHERE id=?`, id).Scan(&encrypted); err != nil || encrypted != "" {
+			t.Fatalf("saved secret not erased: %q %v", encrypted, err)
+		}
+		got, err := getManagedResource("alice", id, "invalid-key")
+		if err != nil || got.HasPassword || got.Password != "" {
+			t.Fatalf("session secret remains: %#v %v", got, err)
+		}
+	}
+	item.UseSessionCredentials, item.Username = false, "cn=admin"
+	for _, secret := range []*string{nil, new(string)} {
+		if _, err := saveManagedResource("alice", item, secret, key); !errors.Is(err, errManagedInvalid) {
+			t.Fatalf("switch back reused erased password: %v", err)
+		}
+	}
+	if _, err := saveManagedResource("alice", item, &password, key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedResourceFlagValidation(t *testing.T) {
+	managedTestDB(t)
+	for _, kind := range []string{"webdav", "local", "cifs", "nfs"} {
+		for _, sessionMode := range []bool{false, true} {
+			item := ManagedResource{Name: "Destination", Kind: kind, Path: t.TempDir(), SchemaOnly: !sessionMode, UseSessionCredentials: sessionMode}
+			if kind == "webdav" {
+				item.URI, item.Path = "https://example.test/", ""
+			}
+			if _, err := saveManagedResource("alice", item, nil, ""); !errors.Is(err, errManagedInvalid) {
+				t.Fatalf("%s accepted LDAP-only flags: %v", kind, err)
+			}
+		}
+	}
+	for _, username := range []string{"cn=admin", "not a DN"} {
+		item := managedTestLDAP()
+		item.UseSessionCredentials, item.Username = true, username
+		if _, err := saveManagedResource("alice", item, nil, ""); !errors.Is(err, errManagedInvalid) {
+			t.Fatalf("session mode accepted username %q: %v", username, err)
+		}
+	}
+}
+
+func TestResolveManagedLDAPCredentials(t *testing.T) {
+	item := managedTestLDAP()
+	item.Password, item.HasPassword, item.SchemaOnly = "stored-secret", true, true
+	unchanged, err := resolveManagedLDAPCredentials(nil, item)
+	if err != nil || unchanged != item {
+		t.Fatalf("saved mode changed: %#v %v", unchanged, err)
+	}
+	item.UseSessionCredentials = true
+	for _, name := range []string{"password login", "SSO", "blank DN", "no cookie", "bad signature"} {
+		t.Run(name, func(t *testing.T) {
+			values := managedTestSession()
+			values["dn"], values["password"] = "uid=current,dc=example", "session-secret"
+			switch name {
+			case "SSO":
+				delete(values, "password")
+			case "blank DN":
+				values["dn"] = " "
+			case "no cookie":
+				values = nil
+			}
+			req := managedTestRequest(t, "GET", "/", "", values)
+			if name == "bad signature" {
+				req.Header.Set("Cookie", "ldap-session=bad-signature")
+			}
+			got, err := resolveManagedLDAPCredentials(req, item)
+			if name != "password login" {
+				if !errors.Is(err, errManagedSessionCredentials) || got.Password != "" || strings.Contains(err.Error(), "stored-secret") || strings.Contains(err.Error(), "session-secret") {
+					t.Fatalf("missing credentials used fallback or leaked secrets: %#v %v", got, err)
+				}
+				return
+			}
+			if err != nil || got.Username != values["dn"] || got.Password != "session-secret" || got.UseSessionCredentials || !got.SchemaOnly {
+				t.Fatalf("did not resolve current user: %#v %v", got, err)
+			}
+			if err := validateManagedResource(&got, got.Password != ""); err != nil {
+				t.Fatalf("resolved credentials invalid: %v", err)
+			}
+			if item.Password != "stored-secret" || !item.UseSessionCredentials {
+				t.Fatal("resolver mutated original")
+			}
+		})
+	}
+}
+
+func TestManagedSessionResourcesAPIAndSchema(t *testing.T) {
+	managedTestDB(t)
+	app := managedTestApp()
+	owner := managedTestSession()
+	owner["dn"] = "cn=alice"
+	payload := `{"name":"Session LDAP","kind":"ldap","uri":"ldap://127.0.0.1:1","username":"","schema_only":true,"use_session_credentials":true}`
+	rr := httptest.NewRecorder()
+	app.handleManagedResources(rr, managedTestRequest(t, "POST", "/api/managed_resources", payload, owner))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create session resource: %d %s", rr.Code, rr.Body.String())
+	}
+	var result struct{ ID int64 }
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil || result.ID == 0 {
+		t.Fatalf("create result: %v", err)
+	}
+	id := strconv.FormatInt(result.ID, 10)
+	rr = httptest.NewRecorder()
+	app.handleManagedResources(rr, managedTestRequest(t, "GET", "/api/managed_resources", "", owner))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"schema_only":true`) || !strings.Contains(rr.Body.String(), `"use_session_credentials":true`) || !strings.Contains(rr.Body.String(), `"has_password":false`) {
+		t.Fatalf("list flags: %d %s", rr.Code, rr.Body.String())
+	}
+	for _, method := range []string{"GET", "POST"} {
+		body := `{"id":` + id + `,"dn":"cn=schema,cn=config","attribute":"olcObjectClasses","operation":"delete"}`
+		rr = httptest.NewRecorder()
+		app.handleAttachedSchema(rr, managedTestRequest(t, method, "/api/attached_schema?id="+id, body, owner))
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "sign in with an LDAP password") {
+			t.Fatalf("SSO schema %s: %d %s", method, rr.Code, rr.Body.String())
+		}
+	}
+	values := managedTestSession()
+	values["dn"], values["password"] = "cn=current", "session-secret"
+	// This proves schema_only still permits editing and network errors stay generic.
+	rr = httptest.NewRecorder()
+	app.handleAttachedSchema(rr, managedTestRequest(t, "POST", "/api/attached_schema", `{"id":`+id+`,"dn":"cn=schema,cn=config","attribute":"olcObjectClasses","operation":"delete"}`, values))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("schema ownership: %d %s", rr.Code, rr.Body.String())
+	}
+	values["dn"] = "cn=alice"
+	for _, method := range []string{"GET", "POST"} {
+		rr = httptest.NewRecorder()
+		body := `{"id":` + id + `,"dn":"cn=schema,cn=config","attribute":"olcObjectClasses","operation":"delete"}`
+		app.handleAttachedSchema(rr, managedTestRequest(t, method, "/api/attached_schema?id="+id, body, values))
+		if rr.Code != http.StatusBadGateway || strings.TrimSpace(rr.Body.String()) != "attached LDAP unavailable" {
+			t.Fatalf("generic network error for %s: %d %s", method, rr.Code, rr.Body.String())
+		}
+	}
+	got, err := getManagedResource("cn=alice", result.ID, app.cfg.EncryptionKey)
+	if err != nil || got.Password != "" || got.HasPassword {
+		t.Fatalf("session password persisted: %#v %v", got, err)
 	}
 }
 

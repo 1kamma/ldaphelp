@@ -24,7 +24,7 @@ const managedUIHTML = `
      <h3>Generate backup</h3>
      <label for="backup-destination">Save to</label>
      <select id="backup-destination"></select>
-     <p class="form-help">Exports the primary server and every attached server saved under your login: all readable naming-context entries (including users), OpenLDAP schema, and advertised subschemas. Any export error stops publication.</p>
+     <p class="form-help">Exports the primary server's readable entries (including users) and schemas, plus every attached server saved under your login. Schema-only attachments contribute schemas without duplicating replicated user/data entries. Other attachments include schemas and data. Any export error stops publication.</p>
      <p><strong>Sensitive, unencrypted archive:</strong> may include password hashes and personal data. Protect the destination. Online exports are not atomic snapshots; LDAP ACLs can hide entries and attributes.</p>
      <button id="run-backup" class="btn" style="background:#047857" onclick="runManagedBackup()">Back up all servers now</button>
     </section>
@@ -39,6 +39,13 @@ const managedUIHTML = `
        <option value="local">Local backup directory</option><option value="cifs">Mounted CIFS/SMB directory</option><option value="nfs">Mounted NFS directory</option>
       </select>
       <div id="managed-uri-field"><label for="managed-uri">Server URI</label><input id="managed-uri" type="url" autocapitalize="none" spellcheck="false"></div>
+      <div id="managed-ldap-options">
+       <label for="managed-scope">LDAP attachment scope</label>
+       <select id="managed-scope"><option value="schema_only">Schemas only (skip replicated user/data backups)</option><option value="full">Schemas and directory data</option></select>
+       <label for="managed-auth">LDAP authentication</label>
+       <select id="managed-auth" onchange="updateManagedFields()"><option value="saved">Saved bind DN and password</option><option value="session">Use my current LDAP login</option></select>
+       <p class="form-help">Current-login mode sends your LDAP login DN and password to this server when opening schemas or running backups; only enable it for trusted servers. It does not save another copy of your password or elevate permissions. SSO logins without a reusable LDAP password must use saved credentials.</p>
+      </div>
       <div id="managed-account-fields">
        <label for="managed-username" id="managed-username-label">Bind user DN</label><input id="managed-username" autocomplete="off" autocapitalize="none" spellcheck="false">
        <label for="managed-password">Password</label><input id="managed-password" type="password" autocomplete="new-password">
@@ -82,18 +89,21 @@ function closeManagement() {
 function updateManagedFields() {
     const kind = document.getElementById('managed-kind').value;
     const ldap = kind === 'ldap', dav = kind === 'webdav';
+    const session = ldap && document.getElementById('managed-auth').value === 'session';
+    const existing = managedResources.find(item => item.id === Number(document.getElementById('managed-id').value));
+    document.getElementById('managed-ldap-options').hidden = !ldap;
     document.getElementById('managed-uri-field').hidden = !ldap && !dav;
-    document.getElementById('managed-account-fields').hidden = !ldap && !dav;
+    document.getElementById('managed-account-fields').hidden = session || (!ldap && !dav);
     document.getElementById('managed-path-field').hidden = ldap;
     document.getElementById('managed-uri').required = ldap || dav;
-    document.getElementById('managed-username').required = ldap;
-    document.getElementById('managed-password').required = ldap && document.getElementById('managed-id').value === '0';
+    document.getElementById('managed-username').required = ldap && !session;
+    document.getElementById('managed-password').required = ldap && !session && !(existing && existing.has_password);
     document.getElementById('managed-path').required = !ldap && !dav;
     document.getElementById('managed-username-label').textContent = ldap ? 'Bind user DN' : 'WebDAV username (optional)';
     document.getElementById('managed-path-label').textContent = dav ? 'Existing subdirectory (relative, optional)' : 'Existing absolute directory on the application host';
     document.getElementById('managed-uri').placeholder = ldap ? 'ldaps://ldap.example.com:636' : 'https://storage.example.com/backups/';
     document.getElementById('managed-kind-help').textContent = ldap
-        ? 'Use LDAPS on untrusted networks. Plain ldap:// does not encrypt credentials in transit. Schema editing supports OpenLDAP cn=schema,cn=config; the saved bind identity needs schema permissions.'
+        ? 'Use LDAPS on untrusted networks. Plain ldap:// does not encrypt credentials in transit. Schema-only scope reads and edits OpenLDAP cn=schema,cn=config and backs up schemas without reading directory data. The selected bind identity needs schema permissions; directory-data access is not required for schema-only attachments.'
         : dav ? 'The collection and subdirectory must already exist. HTTPS certificate verification is enabled. The server must support PUT and MOVE; redirects are not followed.'
         : kind === 'local' ? 'The directory must already exist and be writable by LDAP Help. Files are created privately; the filesystem must support hard links for atomic publication.'
         : 'Mount the CIFS/NFS share on the application host first, using host-managed credentials or Kerberos. Enter the mounted backup subdirectory here. LDAP Help does not mount shares or store mount credentials. The mount must support hard links and be writable by LDAP Help.';
@@ -107,6 +117,8 @@ function resetManagedForm() {
 function editManagedResource(item) {
     for (const field of ['id','name','kind','uri','username','path']) document.getElementById('managed-' + field).value = item[field];
     document.getElementById('managed-password').value = '';
+    document.getElementById('managed-scope').value = item.schema_only ? 'schema_only' : 'full';
+    document.getElementById('managed-auth').value = item.use_session_credentials ? 'session' : 'saved';
     document.getElementById('managed-form-title').textContent = 'Edit ' + item.name;
     updateManagedFields();
     document.getElementById('managed-name').focus();
@@ -124,7 +136,7 @@ async function refreshManagedResources() {
         const card = document.createElement('div'); card.className = 'schema-card';
         const title = document.createElement('h4'); title.textContent = item.name;
         const description = document.createElement('p'); description.style.overflowWrap = 'anywhere';
-        description.textContent = item.kind + ': ' + (item.uri || item.path) + (item.has_password ? ' (password saved)' : '');
+        description.textContent = item.kind + ': ' + (item.uri || item.path) + (item.kind === 'ldap' ? ' — ' + (item.schema_only ? 'schemas only' : 'schemas and data') + ' — ' + (item.use_session_credentials ? 'current LDAP login' : 'saved bind account') : '') + (item.has_password ? ' (password saved)' : '');
         card.append(title, description, managedButton('Edit connection', () => editManagedResource(item), '#4b5563'));
         card.append(managedButton('Remove', async () => {
             if (!confirm('Remove ' + item.name + '? Existing backup files will not be deleted.')) return;
@@ -147,10 +159,18 @@ async function saveManagedForm(event) {
     const data = {};
     for (const field of ['name','kind','uri','username','path']) data[field] = document.getElementById('managed-' + field).value;
     data.id = Number(document.getElementById('managed-id').value);
-    if (data.kind === 'ldap') data.path = '';
+    if (data.kind === 'ldap') {
+        data.path = '';
+        data.schema_only = document.getElementById('managed-scope').value === 'schema_only';
+        data.use_session_credentials = document.getElementById('managed-auth').value === 'session';
+        if (data.use_session_credentials) {
+            data.username = '';
+            if (!confirm('Allow this trusted server to receive your current LDAP login credentials? Any previously saved password for this attachment will be removed.')) return;
+        }
+    }
     if (!['ldap','webdav'].includes(data.kind)) { data.uri = ''; data.username = ''; }
     const password = document.getElementById('managed-password').value;
-    if (password && ['ldap','webdav'].includes(data.kind)) data.password = password;
+    if (password && ['ldap','webdav'].includes(data.kind) && !data.use_session_credentials) data.password = password;
     try {
         await managedRequest('/api/managed_resources', 'POST', data);
         resetManagedForm(); await refreshManagedResources(); managementStatus('Connection saved.');
@@ -187,7 +207,7 @@ async function loadAttachedSchema(id, attr) {
 async function runManagedBackup() {
     const id = Number(document.getElementById('backup-destination').value);
     if (!id) { managementStatus('Save and select a backup destination first.'); return; }
-    if (!confirm('Export all readable entries and schemas from the primary server and every attached server? The resulting archive is not encrypted.')) return;
+    if (!confirm('Export the primary server data and schemas, plus attached servers according to their scope? Schema-only attachments exclude directory data. The resulting archive is not encrypted.')) return;
     const button = document.getElementById('run-backup'); button.disabled = true;
     managementStatus('Exporting all servers and uploading the archive. Keep this page open; large directories can take several minutes.');
     try {

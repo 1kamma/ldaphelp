@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +147,9 @@ func TestBackupExportSchemaAndContexts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if info.SchemaOnly {
+		t.Fatal("legacy export unexpectedly schema-only")
+	}
 	if !reflect.DeepEqual(info.NamingContexts, []string{"dc=example", "ou=people,dc=example"}) {
 		t.Fatalf("contexts: %v", info.NamingContexts)
 	}
@@ -162,6 +166,118 @@ func TestBackupExportSchemaAndContexts(t *testing.T) {
 	}
 	if !strings.Contains(entries.String(), "userPassword: {SSHA}hash") {
 		t.Fatal("password omitted")
+	}
+}
+
+// Any data search fails immediately, including discovery of per-entry subschema.
+func backupSchemaOnlyTestSearcher(t *testing.T, contexts []string, openLDAP bool) backupTestSearcher {
+	t.Helper()
+	return backupTestSearcher(func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+		var entries []*ldap.Entry
+		switch req.BaseDN {
+		case "":
+			if req.Scope != ldap.ScopeBaseObject {
+				t.Fatal("RootDSE search must be base-only")
+			}
+			entries = []*ldap.Entry{ldap.NewEntry("", map[string][]string{
+				"namingContexts":    contexts,
+				"subschemaSubentry": {"cn=Subschema", "CN=subschema", "cn=OtherSchema"},
+			})}
+		case "cn=schema,cn=config":
+			if !openLDAP {
+				return nil, ldap.NewError(ldap.LDAPResultNoSuchObject, errors.New("not OpenLDAP"))
+			}
+			entries = []*ldap.Entry{
+				ldap.NewEntry(req.BaseDN, map[string][]string{"objectClass": {"olcSchemaConfig"}}),
+				ldap.NewEntry("cn={0}core,"+req.BaseDN, map[string][]string{"olcAttributeTypes": {"OpenLDAP definition"}}),
+			}
+		case "cn=Subschema", "cn=OtherSchema":
+			if req.Scope != ldap.ScopeBaseObject {
+				t.Fatal("subschema search must be base-only")
+			}
+			entries = []*ldap.Entry{ldap.NewEntry(req.BaseDN, map[string][]string{
+				"objectClasses": {"class definition"}, "attributeTypes": {"attribute definition"},
+				"ldapSyntaxes": {"syntax"}, "matchingRules": {"rule"},
+			})}
+		default:
+			t.Fatalf("schema-only export issued a data search: %+v", req)
+		}
+		return &ldap.SearchResult{Entries: entries, Controls: []ldap.Control{ldap.NewControlPaging(500)}}, nil
+	})
+}
+
+func TestBackupSchemaOnlyExport(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contexts []string
+	}{
+		{"no naming contexts", nil},
+		{"advertised data", []string{"dc=example", "ou=people,dc=example"}},
+		{"invalid unused context", []string{"not a DN"}},
+	} {
+		for _, openLDAP := range []bool{false, true} {
+			t.Run(tc.name+"/OpenLDAP="+strconv.FormatBool(openLDAP), func(t *testing.T) {
+				var entries, schema bytes.Buffer
+				info, err := backupExportLDAPWithScope(context.Background(), backupSchemaOnlyTestSearcher(t, tc.contexts, openLDAP), &entries, &schema, backupServerManifest{}, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.SchemaOnly || len(info.NamingContexts) != 0 || entries.Len() != 0 {
+					t.Fatalf("schema-only export included data: info=%+v entries=%q", info, entries.String())
+				}
+				if !reflect.DeepEqual(info.Subschema, []string{"cn=Subschema", "cn=OtherSchema"}) {
+					t.Fatalf("subschema: %v", info.Subschema)
+				}
+				for _, text := range []string{"version: 1", "dn: cn=Subschema", "dn: cn=OtherSchema", "objectClasses:", "attributeTypes:", "ldapSyntaxes:", "matchingRules:"} {
+					if !strings.Contains(schema.String(), text) {
+						t.Errorf("missing %s", text)
+					}
+				}
+				if strings.Contains(schema.String(), "olcAttributeTypes:") != openLDAP {
+					t.Fatalf("unexpected OpenLDAP schema: %s", schema.String())
+				}
+			})
+		}
+	}
+}
+
+func TestBackupSchemaOnlyFailureClosed(t *testing.T) {
+	for _, mode := range []string{"root failure", "OpenLDAP failure", "subschema failure", "no schema"} {
+		t.Run(mode, func(t *testing.T) {
+			conn := backupTestSearcher(func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+				switch req.BaseDN {
+				case "":
+					if mode == "root failure" {
+						return nil, errors.New("root unavailable")
+					}
+					attrs := map[string][]string{}
+					if mode != "no schema" {
+						attrs["subschemaSubentry"] = []string{"cn=subschema"}
+					}
+					return &ldap.SearchResult{Entries: []*ldap.Entry{ldap.NewEntry("", attrs)}}, nil
+				case "cn=schema,cn=config":
+					if mode == "OpenLDAP failure" {
+						return nil, ldap.NewError(ldap.LDAPResultInsufficientAccessRights, errors.New("denied"))
+					}
+					return nil, ldap.NewError(ldap.LDAPResultNoSuchObject, errors.New("absent"))
+				case "cn=subschema":
+					return nil, ldap.NewError(ldap.LDAPResultInsufficientAccessRights, errors.New("denied"))
+				default:
+					t.Fatalf("unexpected data search: %+v", req)
+					return nil, errors.New("unexpected search")
+				}
+			})
+			if _, err := backupExportLDAPWithScope(context.Background(), conn, nil, io.Discard, backupServerManifest{}, true); err == nil {
+				t.Fatal("accepted incomplete schema export")
+			}
+		})
+	}
+}
+
+func TestBackupFullExportRequiresNamingContexts(t *testing.T) {
+	_, err := backupExportLDAP(context.Background(), backupSchemaOnlyTestSearcher(t, nil, true), io.Discard, io.Discard, backupServerManifest{})
+	if err == nil || !strings.Contains(err.Error(), "no naming contexts") {
+		t.Fatalf("full export must require naming contexts: %v", err)
 	}
 }
 
@@ -441,7 +557,14 @@ func TestBackupArchive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := backupManifest{Version: 1, Created: time.Now().UTC(), Warning: backupWarning, Servers: []backupServerManifest{{Name: "Primary", Directory: "servers/000"}}}
+	attachment, err := backupExportServer(context.Background(), backupSchemaOnlyTestSearcher(t, nil, true), dir, 7, "Schema attachment", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "servers", "001", "entries.ldif")); !os.IsNotExist(err) {
+		t.Fatalf("schema-only export created entries.ldif: %v", err)
+	}
+	manifest := backupManifest{Version: 2, Created: time.Now().UTC(), Warning: backupWarning, Servers: []backupServerManifest{{Name: "Primary", Directory: "servers/000"}, attachment}}
 	archive, err := backupMakeArchive(context.Background(), dir, manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -483,12 +606,18 @@ func TestBackupArchive(t *testing.T) {
 			if err := json.Unmarshal(data, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Warning != backupWarning || len(got.Servers) != 1 {
+			if got.Version != 2 || got.Warning != backupWarning || len(got.Servers) != 2 {
 				t.Fatal("bad manifest")
+			}
+			if got.Servers[0].SchemaOnly || !got.Servers[1].SchemaOnly || got.Servers[1].ID != 7 {
+				t.Fatalf("incorrect server scope: %+v", got.Servers)
+			}
+			if !bytes.Contains(data, []byte(`"schema_only": false`)) || !bytes.Contains(data, []byte(`"schema_only": true`)) {
+				t.Fatalf("missing explicit manifest scope: %s", data)
 			}
 		}
 	}
-	if !reflect.DeepEqual(names, []string{"manifest.json", "servers/000/schema.ldif", "servers/000/entries.ldif"}) {
+	if !reflect.DeepEqual(names, []string{"manifest.json", "servers/000/schema.ldif", "servers/000/entries.ldif", "servers/001/schema.ldif"}) {
 		t.Fatalf("members %v", names)
 	}
 }

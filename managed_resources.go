@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
@@ -21,19 +22,26 @@ import (
 // ManagedResource is shared by attached servers and backup destinations.
 // Password is available only from getManagedResource, never from list or JSON.
 type ManagedResource struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	URI         string `json:"uri"`
-	Username    string `json:"username"`
-	Path        string `json:"path"`
-	Password    string `json:"-"`
-	HasPassword bool   `json:"has_password"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	Kind                  string `json:"kind"`
+	URI                   string `json:"uri"`
+	Username              string `json:"username"`
+	Path                  string `json:"path"`
+	Password              string `json:"-"`
+	HasPassword           bool   `json:"has_password"`
+	SchemaOnly            bool   `json:"schema_only"`
+	UseSessionCredentials bool   `json:"use_session_credentials"`
 }
 
 var errManagedInvalid = errors.New("invalid managed resource")
+var errManagedSessionCredentials = errors.New("current session has no reusable LDAP credentials; sign in with an LDAP password or use saved credentials for this attachment (SSO sessions may not provide a password)")
+
+var managedResourcesMigrationMu sync.Mutex
 
 func ensureManagedResources() error {
+	managedResourcesMigrationMu.Lock()
+	defer managedResourcesMigrationMu.Unlock()
 	if db == nil {
 		return errors.New("database unavailable")
 	}
@@ -41,15 +49,54 @@ func ensureManagedResources() error {
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  owner TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
  uri TEXT NOT NULL, username TEXT NOT NULL, path TEXT NOT NULL,
- encrypted_password TEXT NOT NULL DEFAULT '')`)
-	return err
+ encrypted_password TEXT NOT NULL DEFAULT '',
+ schema_only INTEGER NOT NULL DEFAULT 0,
+ use_session_credentials INTEGER NOT NULL DEFAULT 0)`)
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{"schema_only", "use_session_credentials"} {
+		exists, err := managedResourceColumnExists(column)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE managed_resources ADD COLUMN ` + column + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+			// Another connection may have migrated after our introspection.
+			if exists, checkErr := managedResourceColumnExists(column); checkErr != nil || !exists {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func managedResourceColumnExists(column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(managed_resources)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, kind string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		found = found || name == column
+	}
+	return found, rows.Err()
 }
 
 func listManagedResources(owner string) ([]ManagedResource, error) {
 	if err := ensureManagedResources(); err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT id,name,kind,uri,username,path,encrypted_password <> '' FROM managed_resources WHERE owner=? ORDER BY id`, owner)
+	rows, err := db.Query(`SELECT id,name,kind,uri,username,path,encrypted_password <> '',schema_only,use_session_credentials FROM managed_resources WHERE owner=? ORDER BY id`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +104,7 @@ func listManagedResources(owner string) ([]ManagedResource, error) {
 	items := make([]ManagedResource, 0)
 	for rows.Next() {
 		var item ManagedResource
-		if err := rows.Scan(&item.ID, &item.Name, &item.Kind, &item.URI, &item.Username, &item.Path, &item.HasPassword); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Kind, &item.URI, &item.Username, &item.Path, &item.HasPassword, &item.SchemaOnly, &item.UseSessionCredentials); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -79,7 +126,7 @@ func getManagedResource(owner string, id int64, key string) (ManagedResource, er
 		return item, err
 	}
 	var encrypted string
-	err := db.QueryRow(`SELECT id,name,kind,uri,username,path,encrypted_password FROM managed_resources WHERE owner=? AND id=?`, owner, id).Scan(&item.ID, &item.Name, &item.Kind, &item.URI, &item.Username, &item.Path, &encrypted)
+	err := db.QueryRow(`SELECT id,name,kind,uri,username,path,encrypted_password,schema_only,use_session_credentials FROM managed_resources WHERE owner=? AND id=?`, owner, id).Scan(&item.ID, &item.Name, &item.Kind, &item.URI, &item.Username, &item.Path, &encrypted, &item.SchemaOnly, &item.UseSessionCredentials)
 	if err != nil {
 		return ManagedResource{}, err
 	}
@@ -104,6 +151,9 @@ func validateManagedResource(item *ManagedResource, hasPassword bool) error {
 	if item.ID < 0 || item.Name == "" || len(item.Name) > 256 {
 		return errManagedInvalid
 	}
+	if item.Kind != "ldap" && (item.SchemaOnly || item.UseSessionCredentials) {
+		return errManagedInvalid
+	}
 	switch item.Kind {
 	case "ldap", "webdav":
 		u, err := url.Parse(item.URI)
@@ -117,12 +167,18 @@ func validateManagedResource(item *ManagedResource, hasPassword bool) error {
 			}
 		}
 		if item.Kind == "ldap" {
-			if (u.Scheme != "ldap" && u.Scheme != "ldaps") || (u.Path != "" && u.Path != "/") || item.Path != "" || !hasPassword {
+			if (u.Scheme != "ldap" && u.Scheme != "ldaps") || (u.Path != "" && u.Path != "/") || item.Path != "" {
 				return errManagedInvalid
 			}
-			dn, err := ldap.ParseDN(item.Username)
-			if err != nil || len(dn.RDNs) == 0 {
-				return errManagedInvalid
+			if item.UseSessionCredentials {
+				if item.Username != "" || hasPassword || item.Password != "" {
+					return errManagedInvalid
+				}
+			} else {
+				dn, err := ldap.ParseDN(item.Username)
+				if err != nil || len(dn.RDNs) == 0 || !hasPassword {
+					return errManagedInvalid
+				}
 			}
 		} else {
 			if u.Scheme != "https" {
@@ -152,7 +208,8 @@ func validateManagedResource(item *ManagedResource, hasPassword bool) error {
 	return nil
 }
 
-// A nil or empty password preserves the existing password. Password and
+// A nil or empty password preserves the existing password in saved mode only.
+// Session mode erases the stored secret. Password and
 // HasPassword on item are output-only; callers must use the password argument.
 func saveManagedResource(owner string, item ManagedResource, password *string, key string) (int64, error) {
 	if strings.TrimSpace(owner) == "" {
@@ -173,6 +230,15 @@ func saveManagedResource(owner string, item ManagedResource, password *string, k
 		}
 	}
 	newPassword := password != nil && *password != ""
+	if item.UseSessionCredentials {
+		if newPassword {
+			return 0, errManagedInvalid
+		}
+		encrypted = ""
+	}
+	// Password and HasPassword are output-only, not alternate credential inputs.
+	item.Password = ""
+	item.HasPassword = false
 	if err := validateManagedResource(&item, newPassword || encrypted != ""); err != nil {
 		return 0, err
 	}
@@ -196,7 +262,7 @@ func saveManagedResource(owner string, item ManagedResource, password *string, k
 			return 0, errors.New("cannot encrypt managed resource")
 		}
 	}
-	_, err = tx.Exec(`UPDATE managed_resources SET name=?,kind=?,uri=?,username=?,path=?,encrypted_password=? WHERE owner=? AND id=?`, item.Name, item.Kind, item.URI, item.Username, item.Path, encrypted, owner, item.ID)
+	_, err = tx.Exec(`UPDATE managed_resources SET name=?,kind=?,uri=?,username=?,path=?,encrypted_password=?,schema_only=?,use_session_credentials=? WHERE owner=? AND id=?`, item.Name, item.Kind, item.URI, item.Username, item.Path, encrypted, item.SchemaOnly, item.UseSessionCredentials, owner, item.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -315,18 +381,20 @@ func (a *App) handleManagedResources(w http.ResponseWriter, r *http.Request) {
 		managedJSON(w, items)
 	case http.MethodPost:
 		var req struct {
-			ID       int64   `json:"id"`
-			Name     string  `json:"name"`
-			Kind     string  `json:"kind"`
-			URI      string  `json:"uri"`
-			Username string  `json:"username"`
-			Path     string  `json:"path"`
-			Password *string `json:"password"`
+			ID                    int64   `json:"id"`
+			Name                  string  `json:"name"`
+			Kind                  string  `json:"kind"`
+			URI                   string  `json:"uri"`
+			Username              string  `json:"username"`
+			Path                  string  `json:"path"`
+			Password              *string `json:"password"`
+			SchemaOnly            bool    `json:"schema_only"`
+			UseSessionCredentials bool    `json:"use_session_credentials"`
 		}
 		if !managedJSONRequest(w, r, &req) {
 			return
 		}
-		id, err := saveManagedResource(owner, ManagedResource{ID: req.ID, Name: req.Name, Kind: req.Kind, URI: req.URI, Username: req.Username, Path: req.Path}, req.Password, a.cfg.EncryptionKey)
+		id, err := saveManagedResource(owner, ManagedResource{ID: req.ID, Name: req.Name, Kind: req.Kind, URI: req.URI, Username: req.Username, Path: req.Path, SchemaOnly: req.SchemaOnly, UseSessionCredentials: req.UseSessionCredentials}, req.Password, a.cfg.EncryptionKey)
 		if err != nil {
 			managedError(w, err)
 			return
@@ -352,6 +420,36 @@ func (a *App) handleManagedResources(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, POST, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// resolveManagedLDAPCredentials never falls back to service or saved credentials.
+// Resolve on a copy so a reusable session password cannot reach persistence.
+func resolveManagedLDAPCredentials(r *http.Request, item ManagedResource) (ManagedResource, error) {
+	if !item.UseSessionCredentials {
+		return item, nil
+	}
+	if item.Kind != "ldap" {
+		return ManagedResource{}, errManagedInvalid
+	}
+	if _, err := store.Get(r, "ldap-session"); err != nil {
+		return ManagedResource{}, errManagedSessionCredentials
+	}
+	dn, password, err := getSessionLDAPCredentials(r)
+	if err != nil {
+		return ManagedResource{}, errManagedSessionCredentials
+	}
+	item.Username = dn
+	item.Password = password
+	item.UseSessionCredentials = false
+	return item, nil
+}
+
+func connectManagedLDAPForRequest(r *http.Request, item ManagedResource) (*ldap.Conn, error) {
+	resolved, err := resolveManagedLDAPCredentials(r, item)
+	if err != nil {
+		return nil, err
+	}
+	return connectManagedLDAP(resolved)
 }
 
 func connectManagedLDAP(item ManagedResource) (*ldap.Conn, error) {
@@ -440,8 +538,12 @@ func (a *App) handleAttachedSchema(w http.ResponseWriter, r *http.Request) {
 		managedError(w, errManagedInvalid)
 		return
 	}
-	conn, err := connectManagedLDAP(item)
+	conn, err := connectManagedLDAPForRequest(r, item)
 	if err != nil {
+		if errors.Is(err, errManagedSessionCredentials) {
+			http.Error(w, errManagedSessionCredentials.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "attached LDAP unavailable", http.StatusBadGateway)
 		return
 	}
